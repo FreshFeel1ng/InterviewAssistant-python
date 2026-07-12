@@ -28,6 +28,7 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
   } = options;
 
   const recognitionRef = useRef<any>(null);
+  const stoppedRef = useRef(false);
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const [isSupported, setIsSupported] = useState(false);
@@ -88,7 +89,33 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
     };
 
     recognition.onend = () => {
-      setIsListening(false);
+      // 用户手动停止 → 不重启
+      if (stoppedRef.current) {
+        setIsListening(false);
+        return;
+      }
+      // 自动结束（长时间静音等） → 自动重启
+      setTimeout(() => {
+        if (!stoppedRef.current) {
+          try {
+            recognition.start();
+            setIsListening(true);
+          } catch {
+            // 如果 start 失败，重建实例
+            const SpeechRecognition =
+              (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+            const newRec = new SpeechRecognition();
+            newRec.continuous = continuous;
+            newRec.interimResults = interimResults;
+            newRec.lang = language;
+            newRec.onresult = recognition.onresult;
+            newRec.onerror = recognition.onerror;
+            newRec.onend = recognition.onend;
+            recognitionRef.current = newRec;
+            try { newRec.start(); setIsListening(true); } catch {}
+          }
+        }
+      }, 300);
     };
 
     recognitionRef.current = recognition;
@@ -102,10 +129,12 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
   }, [language, continuous, interimResults]);
 
   const startListening = useCallback(() => {
+    stoppedRef.current = false;
     createAndStart();
   }, [createAndStart]);
 
   const stopListening = useCallback(() => {
+    stoppedRef.current = true;
     setIsListening(false);
     try {
       recognitionRef.current?.abort();
