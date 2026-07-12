@@ -149,13 +149,22 @@ class ResumeExtractor:
         try:
             response = llm.invoke(prompt)
             content = response.content if hasattr(response, 'content') else str(response)
+            print(f"[Resume] LLM 返回: {content[:200]}...")
             # 清理可能的 markdown 代码块
             content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
             if content.startswith("```"):
-                content = content.split("\n", 1)[1]
-                if content.endswith("```"):
-                    content = content[:-3]
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+
             projects_data = json.loads(content)
+
+            if not isinstance(projects_data, list):
+                print(f"[Resume] LLM 返回的不是数组: {type(projects_data)}")
+                projects_data = []
 
             projects = []
             for p in projects_data:
@@ -175,6 +184,8 @@ class ResumeExtractor:
             return projects
         except Exception as e:
             print(f"[Resume] LLM 提取失败，回退到正则: {e}")
+            import traceback
+            traceback.print_exc()
             return self._extract_projects_fallback(raw_text)
 
     def _extract_projects_fallback(self, raw_text: str) -> list[ProjectInfo]:
@@ -351,7 +362,16 @@ class ResumeKnowledgeBase:
         parser = ResumeParser()
         extractor = ResumeExtractor()
 
+        print(f"[Resume] 开始解析: {filename}, 大小: {len(content)} bytes")
         raw_text = parser.parse(content, filename)
+        print(f"[Resume] 文本提取完成: {len(raw_text)} 字符")
+
+        if not raw_text.strip():
+            print("[Resume] 警告: 提取文本为空，请检查文件格式")
+            # 尝试作为纯文本读取
+            raw_text = content.decode("utf-8", errors="ignore")
+            print(f"[Resume] 回退为纯文本: {len(raw_text)} 字符")
+
         resume = extractor.extract(raw_text)
         self.resume = resume
 
@@ -361,7 +381,7 @@ class ResumeKnowledgeBase:
         # 保存到本地
         self._save_local(resume, filename)
 
-        print(f"[Resume] 简历加载完成: {resume.summary}")
+        print(f"[Resume] 简历加载完成: 项目={len(resume.projects)}, 技能={len(resume.skills)}")
         return resume
 
     def load_from_local(self, filename: str) -> Optional[ResumeData]:
