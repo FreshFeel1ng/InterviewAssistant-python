@@ -104,14 +104,14 @@ export function ConfigPanel({ config, onChange }: ConfigPanelProps) {
         {/* 创意度 */}
         <div>
           <label className="block text-xs text-[#9090a8] mb-2">
-            创意度: {config.temperature.toFixed(1)}
+            创意度: {(config.temperature ?? 0.7).toFixed(1)}
           </label>
           <input
             type="range"
             min="0"
             max="1.5"
             step="0.1"
-            value={config.temperature}
+            value={config.temperature ?? 0.7}
             onChange={(e) => onChange({ temperature: parseFloat(e.target.value) })}
             className="w-full h-2 bg-[#0a0a0f] rounded-lg appearance-none cursor-pointer accent-blue-500"
           />

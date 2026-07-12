@@ -30,6 +30,9 @@ class SessionConfig(BaseModel):
     interview_type: str = "技术面试"
     candidate_background: str = "全栈开发工程师"
     language: str = "zh"
+    temperature: float = 0.7
+    max_tokens: int = 500
+    model: str = "deepseek-v4-flash"
 
 
 class SessionManager:
