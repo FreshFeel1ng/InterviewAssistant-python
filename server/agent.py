@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableSequence
-from langchain.memory import ConversationBufferMemory
+from langchain_core.messages import HumanMessage, AIMessage
 
 from server.config import config
 from server.classifier import classify_question, get_answer_strategy
@@ -59,12 +59,8 @@ class InterviewAgent:
             api_key=config.deepseek_api_key,
             base_url=config.deepseek_base_url,
         )
-        self.memory = ConversationBufferMemory(
-            return_messages=True,
-            memory_key="chat_history",
-            input_key="question",
-            output_key="answer",
-        )
+        # 用简单的列表存储对话历史
+        self.chat_history: list = []
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT_TEMPLATE),
@@ -84,12 +80,9 @@ class InterviewAgent:
         """生成面试回答"""
         classification = classify_question(question)
 
-        memory_vars = await self.memory.aload_memory_variables({})
-        chat_history = memory_vars.get("chat_history", [])
-
         response = await self.chain.ainvoke({
             "question": question,
-            "chat_history": chat_history,
+            "chat_history": self.chat_history,
             "interviewType": interview_type,
             "candidateBackground": candidate_background,
             "language": language,
@@ -97,10 +90,9 @@ class InterviewAgent:
             "answerStrategy": get_answer_strategy(classification.category),
         })
 
-        await self.memory.asave_context(
-            {"question": question},
-            {"answer": response},
-        )
+        # 保存到历史
+        self.chat_history.append(HumanMessage(content=question))
+        self.chat_history.append(AIMessage(content=response))
 
         return response
 
@@ -131,13 +123,10 @@ class InterviewAgent:
 
         classification = classify_question(question)
 
-        memory_vars = await self.memory.aload_memory_variables({})
-        chat_history = memory_vars.get("chat_history", [])
-
         full_response = ""
         async for chunk in chain.astream({
             "question": question,
-            "chat_history": chat_history,
+            "chat_history": self.chat_history,
             "interviewType": interview_type,
             "candidateBackground": candidate_background,
             "language": language,
@@ -147,10 +136,9 @@ class InterviewAgent:
             full_response += chunk
             yield chunk
 
-        await self.memory.asave_context(
-            {"question": question},
-            {"answer": full_response},
-        )
+        # 保存到历史
+        self.chat_history.append(HumanMessage(content=question))
+        self.chat_history.append(AIMessage(content=full_response))
 
-    async def clear_memory(self):
-        await self.memory.aclear()
+    def clear_memory(self):
+        self.chat_history.clear()
