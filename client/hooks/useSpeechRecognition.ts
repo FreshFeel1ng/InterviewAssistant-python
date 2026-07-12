@@ -28,7 +28,8 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
   } = options;
 
   const recognitionRef = useRef<any>(null);
-  const manuallyStoppedRef = useRef(false);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
   const [isSupported, setIsSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
 
@@ -38,10 +39,15 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
     setIsSupported(!!SpeechRecognition);
   }, []);
 
-  const createRecognition = useCallback(() => {
+  const createAndStart = useCallback(() => {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return null;
+    if (!SpeechRecognition) return;
+
+    // 先中止旧的
+    try {
+      recognitionRef.current?.abort();
+    } catch {}
 
     const recognition = new SpeechRecognition();
     recognition.continuous = continuous;
@@ -63,95 +69,48 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
 
       const text = finalTranscript || interimTranscript;
       if (text) {
-        onResult?.(text, !!finalTranscript);
+        optionsRef.current.onResult?.(text, !!finalTranscript);
       }
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      console.error('[Speech] 识别错误:', event.error);
-      onError?.(event.error);
-
-      // 'no-speech' 或 'aborted' 时自动重启（仅非手动停止）
-      if ((event.error === 'no-speech' || event.error === 'aborted') && !manuallyStoppedRef.current) {
+      console.log('[Speech] 识别事件:', event.error);
+      // no-speech 时自动重启
+      if (event.error === 'no-speech') {
         setTimeout(() => {
-          try {
-            recognition.start();
-            setIsListening(true);
-          } catch {
-            // 忽略
-          }
+          try { recognition.start(); } catch {}
         }, 200);
+        return;
       }
+      // 非致命错误不处理
+      if (event.error === 'aborted') return;
+      optionsRef.current.onError?.(event.error);
     };
 
     recognition.onend = () => {
-      // 如果非手动停止，自动重启
-      if (!manuallyStoppedRef.current) {
-        try {
-          recognition.start();
-        } catch {
-          // 如果 start 失败（可能还没准备好），延迟重试
-          setTimeout(() => {
-            if (!manuallyStoppedRef.current) {
-              try {
-                recognitionRef.current?.start();
-                setIsListening(true);
-              } catch {
-                // 忽略
-              }
-            }
-          }, 300);
-        }
-      } else {
-        setIsListening(false);
-      }
+      setIsListening(false);
     };
 
-    return recognition;
-  }, [language, continuous, interimResults, onResult, onError]);
+    recognitionRef.current = recognition;
 
-  // 初始化 recognition
-  useEffect(() => {
-    if (!isSupported) return;
-    recognitionRef.current = createRecognition();
-  }, [isSupported, createRecognition]);
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch (err) {
+      console.error('[Speech] start 失败:', err);
+    }
+  }, [language, continuous, interimResults]);
 
   const startListening = useCallback(() => {
-    manuallyStoppedRef.current = false;
-
-    // 如果 recognition 不存在或状态不对，重新创建
-    if (!recognitionRef.current || recognitionRef.current.aborted) {
-      recognitionRef.current = createRecognition();
-    }
-
-    try {
-      recognitionRef.current?.start();
-      setIsListening(true);
-    } catch (err: any) {
-      // 如果已经在运行中，忽略错误
-      if (err?.message !== "already started") {
-        console.error('[Speech] 启动失败:', err);
-        // 重建 recognition 再试
-        recognitionRef.current = createRecognition();
-        try {
-          recognitionRef.current?.start();
-          setIsListening(true);
-        } catch (e2) {
-          console.error('[Speech] 重建后启动仍失败:', e2);
-        }
-      }
-    }
-  }, [createRecognition]);
+    createAndStart();
+  }, [createAndStart]);
 
   const stopListening = useCallback(() => {
-    manuallyStoppedRef.current = true;
     setIsListening(false);
-
     try {
-      recognitionRef.current?.stop();
-    } catch {
-      // 忽略
-    }
+      recognitionRef.current?.abort();
+    } catch {}
+    recognitionRef.current = null;
   }, []);
 
   return {
