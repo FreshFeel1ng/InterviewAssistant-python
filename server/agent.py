@@ -1,0 +1,156 @@
+"""
+面试助手核心 Agent
+
+基于 LangChain + DeepSeek，生成既专业又口语化的面试回答
+"""
+from typing import AsyncGenerator, Optional
+
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableSequence
+from langchain.memory import ConversationBufferMemory
+
+from server.config import config
+from server.classifier import classify_question, get_answer_strategy
+
+SYSTEM_PROMPT_TEMPLATE = """你是一个专业的面试辅助 AI。你的任务是帮助正在面试的候选人，针对面试官的问题生成自然、专业且口语化的回答。
+
+## 核心原则
+1. **口语化优先**：回答必须像真人说话，使用自然的停顿、语气词（嗯、其实、我觉得等），避免书面语和过于正式的表达
+2. **专业性保证**：内容要准确、有深度，展现扎实的专业功底
+3. **长度适中**：回答控制在 100-250 字之间，不要太长显得像背书
+4. **自然节奏**：可以适当加入思考性的停顿词，模拟真实思考过程
+5. **针对性回答**：根据面试类型和候选人背景，量身定制回答风格
+
+## 面试信息
+- 面试类型：{interviewType}
+- 候选人背景：{candidateBackground}
+- 使用语言：{language}
+
+## 回答风格要求
+- 使用第一人称"我"
+- 加入自然的填充词：嗯、我觉得、其实、怎么说呢
+- 适当展示思考过程："这个问题可以从几个角度来考虑..."
+- 避免完美无瑕的回答，适当展现真实工作中的权衡和取舍
+- 如果问题涉及不会的内容，坦诚表达但展示学习能力
+
+## 回答结构建议
+1. 先用 1-2 句话直接回应问题核心
+2. 展开 2-3 个关键点，用口语化方式表达
+3. 可以举一个简短的实例或经验
+4. 结尾简短总结
+
+## 当前问题的分析
+- 问题类别：{questionCategory}
+- 回答策略建议：{answerStrategy}
+
+记住：你的目标不是给一个完美的书面答案，而是帮候选人说出一个面试官会觉得是"现场思考出来的好回答"。"""
+
+
+class InterviewAgent:
+    """面试助手 Agent"""
+
+    def __init__(self):
+        self.llm = ChatOpenAI(
+            model=config.llm_model,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            api_key=config.deepseek_api_key,
+            base_url=config.deepseek_base_url,
+        )
+        self.memory = ConversationBufferMemory(
+            return_messages=True,
+            memory_key="chat_history",
+            input_key="question",
+            output_key="answer",
+        )
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPT_TEMPLATE),
+            MessagesPlaceholder("chat_history"),
+            ("human", "面试官刚才问了这个问题，请帮我生成一个自然的回答：\n{question}"),
+        ])
+
+        self.chain = prompt | self.llm | StrOutputParser()
+
+    async def generate_answer(
+        self,
+        question: str,
+        interview_type: str = "技术面试",
+        candidate_background: str = "全栈开发工程师",
+        language: str = "zh",
+    ) -> str:
+        """生成面试回答"""
+        classification = classify_question(question)
+
+        memory_vars = await self.memory.aload_memory_variables({})
+        chat_history = memory_vars.get("chat_history", [])
+
+        response = await self.chain.ainvoke({
+            "question": question,
+            "chat_history": chat_history,
+            "interviewType": interview_type,
+            "candidateBackground": candidate_background,
+            "language": language,
+            "questionCategory": classification.category.value,
+            "answerStrategy": get_answer_strategy(classification.category),
+        })
+
+        await self.memory.asave_context(
+            {"question": question},
+            {"answer": response},
+        )
+
+        return response
+
+    async def generate_answer_stream(
+        self,
+        question: str,
+        interview_type: str = "技术面试",
+        candidate_background: str = "全栈开发工程师",
+        language: str = "zh",
+    ) -> AsyncGenerator[str, None]:
+        """流式生成面试回答"""
+        streaming_llm = ChatOpenAI(
+            model=config.llm_model,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            api_key=config.deepseek_api_key,
+            base_url=config.deepseek_base_url,
+            streaming=True,
+        )
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPT_TEMPLATE),
+            MessagesPlaceholder("chat_history"),
+            ("human", "面试官刚才问了这个问题，请帮我生成一个自然的回答：\n{question}"),
+        ])
+
+        chain = prompt | streaming_llm | StrOutputParser()
+
+        classification = classify_question(question)
+
+        memory_vars = await self.memory.aload_memory_variables({})
+        chat_history = memory_vars.get("chat_history", [])
+
+        full_response = ""
+        async for chunk in chain.astream({
+            "question": question,
+            "chat_history": chat_history,
+            "interviewType": interview_type,
+            "candidateBackground": candidate_background,
+            "language": language,
+            "questionCategory": classification.category.value,
+            "answerStrategy": get_answer_strategy(classification.category),
+        }):
+            full_response += chunk
+            yield chunk
+
+        await self.memory.asave_context(
+            {"question": question},
+            {"answer": full_response},
+        )
+
+    async def clear_memory(self):
+        await self.memory.aclear()
