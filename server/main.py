@@ -148,8 +148,6 @@ async def websocket_endpoint(ws: WebSocket):
             "config": session["config"].model_dump(),
             "resume": resume_info,
         },
-            "config": session["config"].model_dump(),
-        },
     })
 
     try:

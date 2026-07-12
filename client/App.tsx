@@ -33,7 +33,11 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const [audioSource, setAudioSource] = useState<'mic' | 'system'>('mic');
   const [isCapturingSystem, setIsCapturingSystem] = useState(false);
+  const [resumeLoaded, setResumeLoaded] = useState(false);
+  const [resumeInfo, setResumeInfo] = useState<{ name?: string; projectCount?: number; skills?: string[] }>({});
+  const [uploading, setUploading] = useState(false);
   const answerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // WebSocket 连接
   const { sendMessage, isConnected } = useWebSocket('ws://localhost:3001/ws', {
@@ -62,9 +66,13 @@ export default function App() {
           break;
         }
         case 'config': {
-          const payload = msg.payload as { config: AgentConfig };
+          const payload = msg.payload as { config: AgentConfig; resume?: { resumeLoaded: boolean; name: string; projectCount: number } };
           if (payload.config) {
             setConfig(payload.config);
+          }
+          if (payload.resume?.resumeLoaded) {
+            setResumeLoaded(true);
+            setResumeInfo(payload.resume);
           }
           break;
         }
@@ -107,6 +115,41 @@ export default function App() {
     },
     [config, sendMessage]
   );
+
+  // 上传简历
+  const handleResumeUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/resume/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.success) {
+        setResumeLoaded(true);
+        setResumeInfo({
+          name: data.data.name,
+          projectCount: data.data.project_count,
+          skills: data.data.skills,
+        });
+        // 通知服务端重新加载简历
+        sendMessage({ type: 'config', payload: {} });
+      } else {
+        alert('上传失败: ' + data.message);
+      }
+    } catch (err: any) {
+      alert('上传失败: ' + err.message);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, [sendMessage]);
+
+  const triggerUpload = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
 
   // 切换麦克风
   const toggleMic = useCallback(() => {
@@ -175,6 +218,82 @@ export default function App() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* 左侧：配置 + 语音识别 */}
           <div className="lg:col-span-1 space-y-6">
+            {/* 简历上传 */}
+            <div className="bg-[#16161f] rounded-2xl border border-[#1e1e2e] p-6">
+              <h3 className="text-sm font-medium text-[#9090a8] mb-4 uppercase tracking-wider">
+                简历知识库
+              </h3>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.docx,.doc,.txt"
+                onChange={handleResumeUpload}
+                className="hidden"
+              />
+
+              {resumeLoaded ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-green-400">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-xs font-medium">简历已加载</span>
+                  </div>
+                  {resumeInfo.name && (
+                    <p className="text-sm text-[#e4e4ef]">姓名: {resumeInfo.name}</p>
+                  )}
+                  {resumeInfo.projectCount !== undefined && (
+                    <p className="text-xs text-[#9090a8]">提取到 {resumeInfo.projectCount} 个项目经历</p>
+                  )}
+                  {resumeInfo.skills && resumeInfo.skills.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {resumeInfo.skills.slice(0, 8).map((s) => (
+                        <span key={s} className="px-2 py-0.5 text-[10px] bg-blue-500/10 text-blue-400 rounded-full border border-blue-500/20">
+                          {s}
+                        </span>
+                      ))}
+                      {resumeInfo.skills.length > 8 && (
+                        <span className="px-2 py-0.5 text-[10px] text-[#9090a8]">+{resumeInfo.skills.length - 8}</span>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    onClick={triggerUpload}
+                    className="w-full py-2 px-3 rounded-lg text-xs border border-[#2a2a3e] text-[#9090a8] hover:text-white hover:border-[#3a3a4e] transition-all"
+                  >
+                    重新上传
+                  </button>
+                </div>
+              ) : (
+                <div className="text-center">
+                  <button
+                    onClick={triggerUpload}
+                    disabled={uploading}
+                    className="w-full py-3 px-4 rounded-xl border-2 border-dashed border-[#2a2a3e] text-[#9090a8] hover:border-blue-500/50 hover:text-blue-400 transition-all disabled:opacity-50"
+                  >
+                    {uploading ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        解析中...
+                      </span>
+                    ) : (
+                      <span className="flex flex-col items-center gap-1">
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                        </svg>
+                        <span className="text-sm">上传简历</span>
+                        <span className="text-[10px] text-[#9090a8]/50">PDF / DOCX / TXT</span>
+                      </span>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
+
             <ConfigPanel
               config={config}
               onChange={handleConfigChange}
