@@ -252,34 +252,25 @@ export default function App() {
 
                   {/* 系统音频模式 */}
                   {audioSource === 'system' && (
-                    <>
-                      <button
-                        onClick={toggleSystemAudio}
-                        className={`
-                          relative w-20 h-20 rounded-full flex items-center justify-center
-                          transition-all duration-300 cursor-pointer border-2
-                          ${
-                            isCapturingSystem
-                              ? 'bg-purple-500/20 border-purple-500 text-purple-400 shadow-[0_0_30px_rgba(168,85,247,0.3)]'
-                              : 'bg-[#1e1e2e] border-[#2a2a3e] text-[#9090a8] hover:border-purple-500/50 hover:text-purple-400'
-                          }
-                        `}
-                      >
-                        {isCapturingSystem && (
-                          <span className="absolute inset-0 rounded-full animate-ping bg-purple-500/20" />
-                        )}
-                        <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <div className="text-center space-y-3">
+                      <div className="w-16 h-16 mx-auto rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center">
+                        <svg className="w-8 h-8 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
                         </svg>
-                      </button>
-                      <p className="text-sm text-[#9090a8]">
-                        {isCapturingSystem ? '正在捕获系统音频... 点击停止' : '点击捕获系统音频'}
+                      </div>
+                      <div className="text-sm text-[#9090a8] leading-relaxed space-y-2">
+                        <p className="font-medium text-purple-400">使用 VB-Cable 捕获系统音频</p>
+                        <ol className="text-xs text-left space-y-1 list-decimal list-inside">
+                          <li>点击上方切换到<strong>麦克风</strong>模式</li>
+                          <li>在浏览器弹窗中将麦克风选为 <strong>CABLE Output</strong></li>
+                          <li>或将系统默认录音设备设为 CABLE Output</li>
+                          <li>点击麦克风按钮即可识别腾讯会议声音</li>
+                        </ol>
+                      </div>
+                      <p className="text-xs text-[#9090a8]/50">
+                        VB-Cable 已安装？切换回麦克风模式即可使用
                       </p>
-                      <p className="text-xs text-[#9090a8]/60 text-center leading-relaxed">
-                        需要安装 VB-Cable 或启用立体声混音<br/>
-                        用于捕获腾讯会议等视频面试声音
-                      </p>
-                    </>
+                    </div>
                   )}
                 </div>
               )}
