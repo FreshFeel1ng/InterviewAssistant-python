@@ -96,16 +96,99 @@ class ResumeParser:
 
 
 class ResumeExtractor:
-    """从简历文本中提取结构化信息"""
+    """从简历文本中提取结构化信息 - 使用 LLM 提取"""
 
     def extract(self, raw_text: str) -> ResumeData:
         data = ResumeData(raw_text=raw_text)
         data.name = self._extract_name(raw_text)
         data.skills = self._extract_skills(raw_text)
-        data.projects = self._extract_projects(raw_text)
-        data.work_experience = self._extract_work_experience(raw_text)
         data.summary = self._build_summary(data)
+        # LLM 提取项目经历
+        data.projects = self._extract_projects_with_llm(raw_text)
         return data
+
+    def _extract_projects_with_llm(self, raw_text: str) -> list[ProjectInfo]:
+        """使用 LLM 从简历中提取项目经历"""
+        from langchain_openai import ChatOpenAI
+        from langchain_core.output_parsers import JsonOutputParser
+
+        # 截断过长的文本（DeepSeek 上下文限制足够）
+        text = raw_text[:8000]
+
+        llm = ChatOpenAI(
+            model=config.llm_model,
+            temperature=0.1,
+            api_key=config.deepseek_api_key,
+            base_url=config.deepseek_base_url,
+        )
+
+        prompt = f"""从以下简历中提取所有项目经历。返回 JSON 数组。
+
+简历内容：
+{text}
+
+请提取每个项目的以下信息，返回严格的 JSON 数组格式：
+[
+  {{
+    "name": "项目名称",
+    "description": "项目简要描述（50字内）",
+    "role": "你在项目中的角色",
+    "tech_stack": ["用到的技术1", "技术2"],
+    "highlights": ["亮点1", "亮点2"],
+    "duration": "项目时间",
+    "raw_text": "简历中关于该项目的原文描述"
+  }}
+]
+
+注意：
+1. 必须返回合法 JSON 数组，不要加任何额外文字
+2. 每个字段尽量填写，没有的信息填空字符串或空数组
+3. 如果简历中没有明确的项目经历，返回空数组 []
+4. raw_text 必须保留简历中的原文"""
+
+        try:
+            response = llm.invoke(prompt)
+            content = response.content if hasattr(response, 'content') else str(response)
+            # 清理可能的 markdown 代码块
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[1]
+                if content.endswith("```"):
+                    content = content[:-3]
+            projects_data = json.loads(content)
+
+            projects = []
+            for p in projects_data:
+                proj = ProjectInfo(
+                    name=p.get("name", ""),
+                    description=p.get("description", ""),
+                    role=p.get("role", ""),
+                    tech_stack=p.get("tech_stack", []),
+                    highlights=p.get("highlights", []),
+                    duration=p.get("duration", ""),
+                    raw_text=p.get("raw_text", ""),
+                )
+                if proj.name or proj.raw_text:
+                    projects.append(proj)
+
+            print(f"[Resume] LLM 提取到 {len(projects)} 个项目")
+            return projects
+        except Exception as e:
+            print(f"[Resume] LLM 提取失败，回退到正则: {e}")
+            return self._extract_projects_fallback(raw_text)
+
+    def _extract_projects_fallback(self, raw_text: str) -> list[ProjectInfo]:
+        """正则回退提取"""
+        projects = []
+        project_sections = self._find_sections(raw_text, [
+            "项目经历", "项目经验", "PROJECT", "Projects",
+            "项目展示", "个人项目", "主要项目", "工作经验", "工作经历",
+        ])
+        for section_start, section_end in project_sections:
+            section_text = raw_text[section_start:section_end]
+            sub_projects = self._split_projects(section_text)
+            projects.extend(sub_projects)
+        return projects
 
     def _extract_name(self, text: str) -> str:
         """提取姓名（通常是简历第一行）"""
@@ -379,13 +462,24 @@ class ResumeKnowledgeBase:
     def get_context_for_question(self, question: str) -> str:
         """根据面试问题检索相关简历上下文"""
         docs = self.search(question, top_k=3)
-        if not docs:
-            return ""
+
+        # 如果检索结果为空或是问"项目"相关的问题，返回所有项目
+        is_project_question = any(kw in question for kw in ["项目", "做过", "经历", "project", "介绍", "负责"])
+        if not docs or is_project_question:
+            # 返回所有项目 + 技能摘要
+            parts = []
+            if self.resume:
+                if self.resume.summary:
+                    parts.append(f"候选人背景: {self.resume.summary}")
+                if self.resume.skills:
+                    parts.append(f"技能: {', '.join(self.resume.skills)}")
+                for proj in self.resume.projects:
+                    parts.append(f"项目: {proj.name}\n角色: {proj.role}\n技术栈: {', '.join(proj.tech_stack)}\n亮点: {'; '.join(proj.highlights)}\n描述: {proj.raw_text[:300]}")
+            return "\n\n---\n\n".join(parts) if parts else ""
 
         parts = []
         for doc in docs:
             parts.append(doc.page_content)
-
         return "\n\n---\n\n".join(parts)
 
     def _save_local(self, resume: ResumeData, filename: str):
