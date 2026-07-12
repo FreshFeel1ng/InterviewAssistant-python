@@ -5,7 +5,7 @@ import asyncio
 import uuid
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -13,6 +13,7 @@ from server.config import config, validate_config
 from server.agent import InterviewAgent
 from server.speech import preprocess_transcript, is_complete_question, extract_question
 from server.audio_capture import SystemAudioCapture, WhisperTranscriber
+from server.resume import ResumeKnowledgeBase
 
 validate_config()
 
@@ -61,6 +62,8 @@ class SessionManager:
 
 
 session_manager = SessionManager()
+# 全局简历知识库（所有会话共享）
+global_resume_kb = ResumeKnowledgeBase()
 
 
 # ============ REST API ============
@@ -76,6 +79,48 @@ async def create_session(cfg: Optional[SessionConfig] = None):
     return {"sessionId": session["id"], "config": session["config"].model_dump()}
 
 
+@app.post("/api/resume/upload")
+async def upload_resume(file: UploadFile = File(...)):
+    """上传简历文件（PDF/DOCX/TXT）"""
+    global global_resume_kb
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    try:
+        resume = global_resume_kb.load_resume(content, file.filename or "resume")
+        return {
+            "success": True,
+            "message": f"简历解析成功",
+            "data": {
+                "name": resume.name,
+                "summary": resume.summary,
+                "skills": resume.skills,
+                "project_count": len(resume.projects),
+                "projects": [
+                    {"name": p.name, "tech_stack": p.tech_stack, "highlights": p.highlights}
+                    for p in resume.projects
+                ],
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"简历解析失败: {str(e)}")
+
+
+@app.get("/api/resume/status")
+async def resume_status():
+    """获取简历加载状态"""
+    if global_resume_kb.resume:
+        return {
+            "loaded": True,
+            "name": global_resume_kb.resume.name,
+            "project_count": len(global_resume_kb.resume.projects),
+            "skills": global_resume_kb.resume.skills,
+        }
+    return {"loaded": False}
+
+
 # ============ WebSocket ============
 
 @app.websocket("/ws")
@@ -84,11 +129,25 @@ async def websocket_endpoint(ws: WebSocket):
 
     session = session_manager.create_session()
 
-    # 发送会话信息
+    # 注入简历知识库到 Agent
+    if global_resume_kb.resume:
+        session["agent"].resume_kb = global_resume_kb
+
+    # 发送会话信息（包含简历状态）
+    resume_info = {}
+    if global_resume_kb.resume:
+        resume_info = {
+            "resumeLoaded": True,
+            "name": global_resume_kb.resume.name,
+            "projectCount": len(global_resume_kb.resume.projects),
+        }
     await ws.send_json({
         "type": "config",
         "payload": {
             "sessionId": session["id"],
+            "config": session["config"].model_dump(),
+            "resume": resume_info,
+        },
             "config": session["config"].model_dump(),
         },
     })

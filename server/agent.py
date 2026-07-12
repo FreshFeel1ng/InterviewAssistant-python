@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from server.config import config
 from server.classifier import classify_question, get_answer_strategy
+from server.resume import ResumeKnowledgeBase
 
 SYSTEM_PROMPT_TEMPLATE = """你是一个专业的面试辅助 AI。你的任务是帮助正在面试的候选人，针对面试官的问题生成自然、专业且口语化的回答。
 
@@ -38,14 +39,18 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个专业的面试辅助 AI。你的任务�
 ## 回答结构建议
 1. 先用 1-2 句话直接回应问题核心
 2. 展开 2-3 个关键点，用口语化方式表达
-3. 可以举一个简短的实例或经验
+3. **优先结合候选人的真实项目经历**来回答，让回答更具体可信
 4. 结尾简短总结
+
+## 候选人的真实项目经历（简历内容）
+{resumeContext}
 
 ## 当前问题的分析
 - 问题类别：{questionCategory}
 - 回答策略建议：{answerStrategy}
 
-记住：你的目标不是给一个完美的书面答案，而是帮候选人说出一个面试官会觉得是"现场思考出来的好回答"。"""
+记住：你的目标不是给一个完美的书面答案，而是帮候选人说出一个面试官会觉得是"现场思考出来的好回答"。
+**特别重要**：如果上面有候选人的项目经历，一定要结合具体项目来回答。比如"在我之前做的XX项目中，我负责了..."这样会让回答更真实可信。"""
 
 
 class InterviewAgent:
@@ -61,6 +66,8 @@ class InterviewAgent:
         )
         # 用简单的列表存储对话历史
         self.chat_history: list = []
+        # 简历知识库（由 session 注入）
+        self.resume_kb: ResumeKnowledgeBase | None = None
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT_TEMPLATE),
@@ -80,6 +87,11 @@ class InterviewAgent:
         """生成面试回答"""
         classification = classify_question(question)
 
+        # 检索简历相关上下文
+        resume_context = ""
+        if self.resume_kb:
+            resume_context = self.resume_kb.get_context_for_question(question)
+
         response = await self.chain.ainvoke({
             "question": question,
             "chat_history": self.chat_history,
@@ -88,6 +100,7 @@ class InterviewAgent:
             "language": language,
             "questionCategory": classification.category.value,
             "answerStrategy": get_answer_strategy(classification.category),
+            "resumeContext": resume_context if resume_context else "暂无候选人简历信息，请根据通用知识回答。",
         })
 
         # 保存到历史
@@ -123,6 +136,11 @@ class InterviewAgent:
 
         classification = classify_question(question)
 
+        # 检索简历相关上下文
+        resume_context = ""
+        if self.resume_kb:
+            resume_context = self.resume_kb.get_context_for_question(question)
+
         full_response = ""
         async for chunk in chain.astream({
             "question": question,
@@ -132,6 +150,7 @@ class InterviewAgent:
             "language": language,
             "questionCategory": classification.category.value,
             "answerStrategy": get_answer_strategy(classification.category),
+            "resumeContext": resume_context if resume_context else "暂无候选人简历信息，请根据通用知识回答。",
         }):
             full_response += chunk
             yield chunk
