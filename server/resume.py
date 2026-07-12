@@ -63,6 +63,7 @@ class ResumeParser:
 
     def _parse_pdf(self, content: bytes) -> str:
         text = ""
+        # 方案1: pdfplumber
         try:
             import pdfplumber
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -70,9 +71,10 @@ class ResumeParser:
                     page_text = page.extract_text()
                     if page_text:
                         text += page_text + "\n"
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Resume] pdfplumber 失败: {e}")
 
+        # 方案2: PyPDF2
         if not text.strip():
             try:
                 from PyPDF2 import PdfReader
@@ -81,8 +83,19 @@ class ResumeParser:
                     t = page.extract_text()
                     if t:
                         text += t + "\n"
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Resume] PyPDF2 失败: {e}")
+
+        # 方案3: pymupdf (fitz)
+        if not text.strip():
+            try:
+                import fitz
+                doc = fitz.open(stream=content, filetype="pdf")
+                for page in doc:
+                    text += page.get_text() + "\n"
+                doc.close()
+            except Exception as e:
+                print(f"[Resume] pymupdf 失败: {e}")
 
         return text.strip()
 
@@ -367,10 +380,11 @@ class ResumeKnowledgeBase:
         print(f"[Resume] 文本提取完成: {len(raw_text)} 字符")
 
         if not raw_text.strip():
-            print("[Resume] 警告: 提取文本为空，请检查文件格式")
-            # 尝试作为纯文本读取
-            raw_text = content.decode("utf-8", errors="ignore")
-            print(f"[Resume] 回退为纯文本: {len(raw_text)} 字符")
+            print("[Resume] 警告: 所有 PDF 解析方式均失败")
+            # 不进行 utf-8 decode（那会是乱码），返回空数据
+            resume = ResumeData()
+            self.resume = resume
+            return resume
 
         resume = extractor.extract(raw_text)
         self.resume = resume
