@@ -71,7 +71,7 @@ class ResumeParser:
         """使用 MinerU API 解析 PDF"""
         import requests
 
-        url = "https://mineru.net/api/v1/parse"
+        url = "https://mineru.net/api/v4/parse"
         headers = {"Authorization": f"Bearer {config.mineru_api_token}"}
 
         try:
@@ -79,12 +79,20 @@ class ResumeParser:
             response = requests.post(url, headers=headers, files=files, timeout=60)
             if response.status_code == 200:
                 result = response.json()
-                # MinerU 返回 markdown 格式文本
-                text = result.get("content", "") or result.get("text", "") or ""
+                print(f"[Resume] MinerU 响应字段: {list(result.keys())[:10]}")
+                # MinerU v4 返回的字段可能是 content / markdown / text
+                text = (
+                    result.get("content", "")
+                    or result.get("markdown", "")
+                    or result.get("text", "")
+                    or result.get("data", {}).get("content", "")
+                    or result.get("data", {}).get("markdown", "")
+                    or ""
+                )
                 print(f"[Resume] MinerU 解析成功: {len(text)} 字符")
                 return text
             else:
-                print(f"[Resume] MinerU 请求失败: {response.status_code} {response.text[:200]}")
+                print(f"[Resume] MinerU 请求失败: {response.status_code} {response.text[:300]}")
                 return ""
         except Exception as e:
             print(f"[Resume] MinerU 异常: {e}")
