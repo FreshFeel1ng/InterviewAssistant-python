@@ -68,101 +68,89 @@ class ResumeParser:
             return content.decode("utf-8", errors="ignore")
 
     def _parse_with_mineru(self, content: bytes, filename: str) -> str:
-        """使用 MinerU 精准解析 API（Token 认证，异步：获取上传链接 → PUT → 提交任务 → 轮询 → 下载zip）"""
+        """使用 MinerU 精准解析 API（batch 模式：获取上传链接 → PUT → 轮询 batch → 下载zip解压md）"""
         import requests
         import time
+        import zipfile
 
         token = config.mineru_api_token
+        base = "https://mineru.net/api/v4"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        }
 
         try:
-            # Step 1: 获取文件上传链接
+            # Step 1: 获取上传链接（batch 模式）
             print("[Resume] MinerU: 获取上传链接...")
-            batch_resp = requests.post(
-                "https://mineru.net/api/v4/file-urls/batch",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}",
-                },
-                json={"files": [{"name": filename, "is_public": False}]},
-                timeout=30,
-            )
+            data = {
+                "enable_formula": True,
+                "enable_table": True,
+                "language": "ch",
+                "files": [
+                    {
+                        "name": filename,
+                        "is_ocr": True,
+                        "data_id": "resume_0",
+                    }
+                ],
+            }
+            resp = requests.post(f"{base}/file-urls/batch", headers=headers, json=data, timeout=30)
 
-            if batch_resp.status_code != 200:
-                print(f"[Resume] MinerU 获取上传链接失败: {batch_resp.status_code} {batch_resp.text[:200]}")
+            if resp.status_code != 200:
+                print(f"[Resume] MinerU 请求失败: {resp.status_code} {resp.text[:200]}")
                 return ""
 
-            batch_data = batch_resp.json()
-            urls = batch_data.get("data", {}).get("urls", [])
-            if not urls:
-                print(f"[Resume] MinerU 未返回上传链接")
+            result = resp.json()
+            if result.get("code") != 0:
+                print(f"[Resume] MinerU 业务失败: {result.get('msg', '')}")
                 return ""
 
-            upload_url = urls[0]
+            batch_id = result["data"]["batch_id"]
+            file_urls = result["data"]["file_urls"]
+            if not file_urls:
+                print("[Resume] MinerU: 未获取到上传链接")
+                return ""
 
             # Step 2: PUT 上传文件
             print("[Resume] MinerU: 上传文件...")
-            upload_resp = requests.put(upload_url, data=content, timeout=120)
+            upload_resp = requests.put(file_urls[0], data=content, timeout=120)
             if upload_resp.status_code not in (200, 201):
                 print(f"[Resume] MinerU 上传失败: {upload_resp.status_code}")
                 return ""
 
-            # Step 3: 提交解析任务
-            print("[Resume] MinerU: 提交解析任务...")
-            task_resp = requests.post(
-                "https://mineru.net/api/v4/extract/task",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}",
-                },
-                json={
-                    "url": upload_url.split("?")[0],
-                    "model_version": "vlm",
-                    "is_ocr": True,
-                },
-                timeout=30,
-            )
+            print(f"[Resume] MinerU: batch_id={batch_id}, 等待解析...")
 
-            if task_resp.status_code != 200:
-                print(f"[Resume] MinerU 提交任务失败: {task_resp.status_code} {task_resp.text[:200]}")
-                return ""
-
-            task_data = task_resp.json()
-            task_id = task_data.get("data", {}).get("task_id", "")
-            if not task_id:
-                print(f"[Resume] MinerU 未返回 task_id")
-                return ""
-
-            print(f"[Resume] MinerU: task_id={task_id}, 等待解析...")
-
-            # Step 4: 轮询结果
+            # Step 3: 轮询 batch 结果
+            result_url = f"{base}/extract-results/batch/{batch_id}"
             for attempt in range(40):
                 time.sleep(3)
-                result_resp = requests.get(
-                    f"https://mineru.net/api/v4/extract/task/{task_id}",
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=30,
-                )
+                res = requests.get(result_url, headers=headers, timeout=30)
 
-                if result_resp.status_code != 200:
+                if res.status_code != 200 or res.json().get("code") != 0:
                     continue
 
-                result_data = result_resp.json()
-                state = result_data.get("data", {}).get("state", "")
+                data = res.json()["data"]
+                extract_results = data.get("extract_result", [])
+
+                if not extract_results:
+                    continue
+
+                result_item = extract_results[0]
+                state = result_item.get("state", "")
 
                 if state == "done":
-                    # 下载结果 zip，解压取 md 文件
-                    result_url = result_data.get("data", {}).get("result_url", "")
-                    if not result_url:
-                        print("[Resume] MinerU: 无结果链接")
+                    zip_url = result_item.get("full_zip_url", "")
+                    if not zip_url:
+                        print("[Resume] MinerU: 无 zip 下载链接")
                         return ""
 
                     print("[Resume] MinerU: 下载结果...")
-                    zip_resp = requests.get(result_url, timeout=30)
+                    zip_resp = requests.get(zip_url, timeout=30)
                     if zip_resp.status_code != 200:
                         print(f"[Resume] MinerU 下载失败: {zip_resp.status_code}")
                         return ""
 
-                    import zipfile
                     with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
                         for name in zf.namelist():
                             if name.endswith(".md"):
@@ -174,7 +162,7 @@ class ResumeParser:
                     return ""
 
                 elif state == "failed":
-                    print("[Resume] MinerU: 任务失败")
+                    print(f"[Resume] MinerU: 任务失败")
                     return ""
 
                 elif attempt % 5 == 0:
