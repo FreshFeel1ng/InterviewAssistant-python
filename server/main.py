@@ -68,6 +68,13 @@ session_manager = SessionManager()
 # 全局简历知识库（所有会话共享）
 global_resume_kb = ResumeKnowledgeBase()
 
+# 服务启动时自动加载最近保存的简历
+loaded = global_resume_kb.load_latest()
+if loaded:
+    print(f"[Startup] 自动加载简历: {loaded.name}, 项目={len(loaded.projects)}个, 技能={len(loaded.skills)}个")
+else:
+    print("[Startup] 未找到已保存的简历，等待上传")
+
 
 # ============ REST API ============
 

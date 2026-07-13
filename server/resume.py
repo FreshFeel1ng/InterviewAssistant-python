@@ -543,6 +543,21 @@ class ResumeKnowledgeBase:
         self._build_chunks(resume)
         return resume
 
+    def load_latest(self) -> Optional[ResumeData]:
+        """自动加载 data/resumes/ 目录下最近修改的简历 JSON"""
+        json_files = sorted(
+            RESUME_DATA_DIR.glob("*.json"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        if not json_files:
+            print("[Resume] 未找到已保存的简历")
+            return None
+
+        latest = json_files[0]
+        print(f"[Resume] 加载已保存的简历: {latest.name}")
+        return self.load_from_local(latest.name)
+
     def _build_chunks(self, resume: ResumeData):
         """构建知识库块"""
         chunks = []

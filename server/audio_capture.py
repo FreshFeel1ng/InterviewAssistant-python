@@ -12,7 +12,6 @@ import asyncio
 import io
 import wave
 import threading
-import time
 from typing import Optional, Callable
 
 import numpy as np

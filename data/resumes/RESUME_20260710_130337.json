@@ -19,9 +19,9 @@
   "raw_text": "## 个人简历\n\n谢瑾弘18774693307|2960168970@qq.com| 21岁\n\n## 教育经历\n\n2023.9-2027.6|长沙理工大学|网络工程|本科\n\n## 项目经历\n\n2025.09 - 2025.11 |广告推广短链平台（全栈项目)\n\n技术架构: SpringBoot + MyBatis-Plus + Redis + Kafka + MySQL + Resilience4j + Micrometer/Prometheus/Grafana + Vue3 + Vite + Nginx + Docker + cpolar\n\n项目背景：一个面向广告投放场景的短链推广平台，投放者创建短链并发布推广任务，推广者接单分享短链赚取点击收益。  \n核心目标：高并发下跳转成功率99.9%+，具备完整的反欺诈、限流、可观测性能力。\n\n1.全栈架构设计：后端SpringBoot提供RESTful API，前端Vue3 SPA双角色(投放者/推广者)工作台，Nginx部署于CentOS7 Docker容器，cpolar内网穿透提供公网访问。数据库新增4张推广业务表（platform\\_user/promotion\\_task/promoter\\_task/click\\_earning)，原有short\\_url表扩展投放者关联字段。\n\n2.三级缓存架构与跳转优化：Caffeine本地缓存(10min TTL)→Redis分布式缓存→MySQL三级缓存体系，缓存命中率99%。\n\nCaffeine热数据命中<1ms，Redis命中<3ms，最坏情况MySQL查询<15ms。缓存更新采用Cache-Aside模式+延迟双删(500ms)避免并发脏读。短码与域名的多级缓存索引设计，支持按短码、短码+域名两种查询维度。\n\n3.分布式短码生成与防冲突：雪花算法生成全局唯一ID，Base62编码转为6-8位短码。时钟回拨处理：ZooKeeper记录上次时间戳，回拨<5ms自旋等待，超时重新分配Workld。短码冲突兜底：数据库唯一索引捕获DuplicateKeyException，自动追加随机字符重试（最多3次）。\n\n4.广告推广任务系统：投放者创建短链时选择投放平台(抖音/微信/微博/小红书/B站），发布推广任务设置单次点击收益和总预算。推广者任务大厅浏览可用任务、接受任务后获得唯一推广短链，分享到社交媒体赚取收益。每次用户点击自动计算收益：total clicks+1、推广者balance增加、任务remainingbudget扣减、预算耗尽任务自动下线。支持任务暂停/恢复/停止。\n\n5.IP去重反欺诈与多层级风控：点击收益去重：Redis Key click:dedup:{shortCode}:{ip}，TTL=5min，同—IP 5分钟内重复点击不计算收益。URL安全三层递进检测一语法层：协议白名单(http/https)、域名格式/IP格式校验，拦截javascript://等非法协议。内容层：集成Google Safe Browsing API检测恶意/钓鱼链接，本地缓存检测结果(TTL=1h)，API调用量降低99%。行为层：Redis ZSet滑动窗口统计单短码1分钟内访问频次，超阈值(100次/min)触发告警日志(仅记录不阻断，避免误杀推广场景正常流量）。\n\n6.Kafka异步削峰与可靠性：访问日志通过Kafka异步写入数据库，确保重定向主流程不受日志落库影响。生产者acks=all+同步发送回调保证消息不丢失。消费者手动提交offset+批量拉取(500条/次)提升吞吐。访问日志记录完整维度：IP+地理位置+User-Agent(浏览器/OS/设备)+Referer+时间戳。\n\n7.接口限流与熔断保护：Resilience4j@RateLimiter注解实现差异化限流：创建短链接口10 QPS，创建任务接口5 QPS。结合Redis ZSet滑动窗口实现单IP访问频控(跳转接口30次/min)，超过阈值返回429。IP地理位置解析(ipinfo.io API)用于访问来源分析。\n\n8.全链路可观测性：Micrometer注册13个Prometheus指标(Counter:创建成功/失败、跳转成功/失败、缓存命中/未命中、URL安全/不安全、DB错误；Timer:创建耗时、跳转耗时、DB查询耗时，含P50/P95/P99分位数；Gauge:活跃短链数)。Grafana Dashboard 10面板实时监控：跳转QPS、耗时P50/P95、缓存命中率、JVM内存、CPU使用率等。\n\n2025.01 - 2025.03 |高并发社交电商平台\n\n技术架构: SpringBoot + MyBatis-Plus + Redis(Cluster) + RabbitMQ + Nginx + Caffeine + Canal\n\n项目背景：一个面向本地生活的社交电商平台，核心功能包括商户查询、优惠券秒杀、Feed流推送、LBS附近推荐等。目标是在万级QPS下保证核心接口的稳定性与响应速度。\n\n1.多级缓存架构与一致性设计：构建Caffeine本地缓存→Redis Cluster分布式缓存两级架构，商户查询RT从180ms降至25ms，DB查询量降低80%。Canal监听binlog异步更新商户基础信息（名称、地址、电话等低频变更数据），秒级最终一致，业务代码与缓存逻辑完全解耦。逻辑过期+互斥锁热Key保护：适用于商户统计指标(评分、销量等高频读取数据)，缓存不设TTL而是存储逻辑过期时间戳，读取时若发现已过期，由单个线程持有互斥锁异步重建，其余请求返回旧值兜底。两种方案配合：Canal负责低频基础信息的最终一致，逻辑过期负责高频统计指标的热Key保护，覆盖不同一致性场景。\n\n2.缓存防护体系：四级防护链：空值缓存(TTL=60s)+布隆过滤器→逻辑过期+互斥锁(热Key击穿)→随机过期时间(±30s，防雪崩)→Sentinel熔断降级。库存采用Redis+Lua原子扣减，不存在缓存击穿问题，由预热+限流兜底。\n\n3.Redis数据结构深度设计：商户搜索使用ZSet维护评分排行榜，ZREVRANGEBYSCORE排序+分页，单次<5ms。Feed流收件箱用ZSet按时间戳score存储，支持滚动分页。LBS附近推荐用GEO存储坐标，GEORADIUS实现3km内检索<50ms，结合GEOHASH按区域分片。\n\n4.秒杀系统与异步削峰：Redis+Lua脚本原子扣减库存+资格校验（一人一单)，消除超卖。订单ID采用改进雪花算法：ZooKeeper记录时间戳，回拨<5ms自旋等待，>5ms重新分配Workld；数据库唯一索引兜底防重。RabbitMQ异步落库：生产者Confirm+消费者手动Ack保证消息不丢失；消费端Redis分布式锁+唯一索引双重幂等；监控队列深度，触发消费者动态扩容。DBCPU负载降低65%，峰值万级请求平稳入库。\n\n5.Feed流推拉结合与LBS服务：大V(粉丝>10万)推模式主动写入粉丝收件箱，普通用户拉模式按需聚合，冷启动用户首屏延迟降低40%。粉丝收件箱按时间排序分页拉取。开发附近店铺推荐：Redis GEO存储商户坐标，3km内检索<50ms。\n\n6.负载均衡与性能优化：Redis Cluster通过哈希槽自动完成数据分片与故障转移。热点请求通过Caffeine本地缓存拦截，同一商户查询在应用进程内直接返回，避免单Key高QPS热点。Nginx反向代理+静态资源缓存，首屏加载优化至1.2s\n\n## 专业技能\n\nJava基础：深入理解集合体系(HashMap扩容/红黑树转化)、JUC并发编程(AQS/CAS/ThreadLocal内存泄漏防治）、JVM内存模型与GC调优（G1）、类加载机制与双亲委派机制。\n\n框架与中间件：熟练掌握SpringBoot生态(IOC/AOP/循环依赖三级缓存)、MyBatis-Plus；熟悉SpringCloud微服务治理数据库：深入理解MySQL事务隔离级别与MVCC实现、索引优化(覆盖索引/索引I下推/最左匹配）、慢SQL分析(Explain)、Binlog/Redo/Undo日志原理。\n\n缓存与消息队列：精通Redis数据结构设计（String/Hash/ZSet/Geo/HyperLogLog）、持久化策略（RDB/AOF混合）、哨兵/集群模式；掌握RabbitMQ/Kafka消息可靠性保障(确认机制/死信队列/积压处理）。\n\n系统设计：多级缓存架构设计、分布式ID生成（雪花算法+时钟回拨补偿）、限流熔断(Sentinel/Resilience4j）、全栈项目开发(Vue3 +SpringBoot)。\n\n可观测性：Micrometer + Prometheus + Grafana 监控体系搭建，自定义业务指标(Counter/Timer/Gauge），Dashboard可视化看板设计。\n\nAI应用：在大模型辅助下能够进行大部分日常开发，利用大模型提高工作效率。积极学习新知识，了解LangChain、LangSmith、Agent、RAG、向量数据库等相关知识，具备开发简易Agent的能力。\n\n语言能力：CET-6，具备阅读英文技术文档的能力。",
   "projects": [
     {
-      "name": "广告推广短链平台（全栈项目）",
-      "description": "面向广告投放场景的短链推广平台，投放者创建短链，推广者接单分享赚取收益。",
-      "role": "全栈开发工程师",
+      "name": "广告推广短链平台",
+      "description": "面向广告投放场景的短链推广平台，投放者创建短链，推广者分享赚取收益。",
+      "role": "全栈开发",
       "tech_stack": [
         "SpringBoot",
         "MyBatis-Plus",
@@ -38,27 +38,25 @@
         "Docker",
         "cpolar",
         "ZooKeeper",
-        "Google Safe Browsing API",
-        "ipinfo.io API"
+        "Caffeine"
       ],
       "highlights": [
-        "三级缓存架构（Caffeine→Redis→MySQL），缓存命中率99%",
-        "分布式短码生成：雪花算法+Base62编码+时钟回拨处理+冲突兜底",
-        "IP去重反欺诈与多层级风控（URL安全三层递进检测、滑动窗口限频）",
-        "Kafka异步削峰与可靠性保障",
-        "全链路可观测性：Micrometer注册13个Prometheus指标，Grafana Dashboard 10面板"
+        "三级缓存架构（Caffeine+Redis+MySQL）缓存命中率99%，跳转优化<15ms",
+        "分布式短码生成：雪花算法+Base62+时钟回拨补偿+数据库唯一索引防冲突",
+        "IP去重反欺诈：Redis 5min TTL去重，滑动窗口频控，Google Safe Browsing API安全检测",
+        "Kafka异步削峰+生产者确认与消费者手动Ack，可靠性保障"
       ],
       "duration": "2025.09 - 2025.11",
       "raw_text": "2025.09 - 2025.11 |广告推广短链平台（全栈项目)\n\n技术架构: SpringBoot + MyBatis-Plus + Redis + Kafka + MySQL + Resilience4j + Micrometer/Prometheus/Grafana + Vue3 + Vite + Nginx + Docker + cpolar\n\n项目背景：一个面向广告投放场景的短链推广平台，投放者创建短链并发布推广任务，推广者接单分享短链赚取点击收益。  \n核心目标：高并发下跳转成功率99.9%+，具备完整的反欺诈、限流、可观测性能力。\n\n1.全栈架构设计：后端SpringBoot提供RESTful API，前端Vue3 SPA双角色(投放者/推广者)工作台，Nginx部署于CentOS7 Docker容器，cpolar内网穿透提供公网访问。数据库新增4张推广业务表（platform_user/promotion_task/promoter_task/click_earning)，原有short_url表扩展投放者关联字段。\n\n2.三级缓存架构与跳转优化：Caffeine本地缓存(10min TTL)→Redis分布式缓存→MySQL三级缓存体系，缓存命中率99%。\nCaffeine热数据命中<1ms，Redis命中<3ms，最坏情况MySQL查询<15ms。缓存更新采用Cache-Aside模式+延迟双删(500ms)避免并发脏读。短码与域名的多级缓存索引设计，支持按短码、短码+域名两种查询维度。\n\n3.分布式短码生成与防冲突：雪花算法生成全局唯一ID，Base62编码转为6-8位短码。时钟回拨处理：ZooKeeper记录上次时间戳，回拨<5ms自旋等待，超时重新分配Workld。短码冲突兜底：数据库唯一索引捕获DuplicateKeyException，自动追加随机字符重试（最多3次）。\n\n4.广告推广任务系统：投放者创建短链时选择投放平台(抖音/微信/微博/小红书/B站），发布推广任务设置单次点击收益和总预算。推广者任务大厅浏览可用任务、接受任务后获得唯一推广短链，分享到社交媒体赚取收益。每次用户点击自动计算收益：total clicks+1、推广者balance增加、任务remainingbudget扣减、预算耗尽任务自动下线。支持任务暂停/恢复/停止。\n\n5.IP去重反欺诈与多层级风控：点击收益去重：Redis Key click:dedup:{shortCode}:{ip}，TTL=5min，同—IP 5分钟内重复点击不计算收益。URL安全三层递进检测一语法层：协议白名单(http/https)、域名格式/IP格式校验，拦截javascript://等非法协议。内容层：集成Google Safe Browsing API检测恶意/钓鱼链接，本地缓存检测结果(TTL=1h)，API调用量降低99%。行为层：Redis ZSet滑动窗口统计单短码1分钟内访问频次，超阈值(100次/min)触发告警日志(仅记录不阻断，避免误杀推广场景正常流量）。\n\n6.Kafka异步削峰与可靠性：访问日志通过Kafka异步写入数据库，确保重定向主流程不受日志落库影响。生产者acks=all+同步发送回调保证消息不丢失。消费者手动提交offset+批量拉取(500条/次)提升吞吐。访问日志记录完整维度：IP+地理位置+User-Agent(浏览器/OS/设备)+Referer+时间戳。\n\n7.接口限流与熔断保护：Resilience4j@RateLimiter注解实现差异化限流：创建短链接口10 QPS，创建任务接口5 QPS。结合Redis ZSet滑动窗口实现单IP访问频控(跳转接口30次/min)，超过阈值返回429。IP地理位置解析(ipinfo.io API)用于访问来源分析。\n\n8.全链路可观测性：Micrometer注册13个Prometheus指标(Counter:创建成功/失败、跳转成功/失败、缓存命中/未命中、URL安全/不安全、DB错误；Timer:创建耗时、跳转耗时、DB查询耗时，含P50/P95/P99分位数；Gauge:活跃短链数)。Grafana Dashboard 10面板实时监控：跳转QPS、耗时P50/P95、缓存命中率、JVM内存、CPU使用率等。"
     },
     {
       "name": "高并发社交电商平台",
-      "description": "面向本地生活的社交电商平台，含商户查询、秒杀、Feed流、LBS附近推荐等功能。",
-      "role": "后端开发工程师",
+      "description": "面向本地生活的社交电商平台，包含商户查询、优惠券秒杀、Feed流推送、LBS附近推荐。",
+      "role": "后端开发",
       "tech_stack": [
         "SpringBoot",
         "MyBatis-Plus",
-        "Redis(Cluster)",
+        "Redis (Cluster)",
         "RabbitMQ",
         "Nginx",
         "Caffeine",
@@ -67,12 +65,10 @@
         "Sentinel"
       ],
       "highlights": [
-        "多级缓存架构（Caffeine→Redis Cluster），商户查询RT从180ms降至25ms，DB查询量降低80%",
-        "Canal监听binlog异步更新+逻辑过期+互斥锁热Key保护，覆盖不同一致性场景",
+        "多级缓存架构：Caffeine+Redis Cluster，Canal监听binlog异步更新，逻辑过期+互斥锁热Key保护",
         "缓存防护体系：空值缓存+布隆过滤器+逻辑过期+随机过期+Sentinel熔断降级",
-        "Redis+Lua原子扣减库存，消除超卖；改进雪花算法+唯一索引防重",
-        "RabbitMQ异步削峰，DBCPU负载降低65%",
-        "Feed流推拉结合+LBS附近推荐（GEO），3km内检索<50ms"
+        "Redis深度设计：ZSet评分排行、Feed流收件箱、GEO LBS附近推荐（3km检索<50ms）",
+        "秒杀系统：Redis+Lua原子扣减+雪花算法+RabbitMQ异步削峰，双重幂等防重复"
       ],
       "duration": "2025.01 - 2025.03",
       "raw_text": "2025.01 - 2025.03 |高并发社交电商平台\n\n技术架构: SpringBoot + MyBatis-Plus + Redis(Cluster) + RabbitMQ + Nginx + Caffeine + Canal\n\n项目背景：一个面向本地生活的社交电商平台，核心功能包括商户查询、优惠券秒杀、Feed流推送、LBS附近推荐等。目标是在万级QPS下保证核心接口的稳定性与响应速度。\n\n1.多级缓存架构与一致性设计：构建Caffeine本地缓存→Redis Cluster分布式缓存两级架构，商户查询RT从180ms降至25ms，DB查询量降低80%。Canal监听binlog异步更新商户基础信息（名称、地址、电话等低频变更数据），秒级最终一致，业务代码与缓存逻辑完全解耦。逻辑过期+互斥锁热Key保护：适用于商户统计指标(评分、销量等高频读取数据)，缓存不设TTL而是存储逻辑过期时间戳，读取时若发现已过期，由单个线程持有互斥锁异步重建，其余请求返回旧值兜底。两种方案配合：Canal负责低频基础信息的最终一致，逻辑过期负责高频统计指标的热Key保护，覆盖不同一致性场景。\n\n2.缓存防护体系：四级防护链：空值缓存(TTL=60s)+布隆过滤器→逻辑过期+互斥锁(热Key击穿)→随机过期时间(±30s，防雪崩)→Sentinel熔断降级。库存采用Redis+Lua原子扣减，不存在缓存击穿问题，由预热+限流兜底。\n\n3.Redis数据结构深度设计：商户搜索使用ZSet维护评分排行榜，ZREVRANGEBYSCORE排序+分页，单次<5ms。Feed流收件箱用ZSet按时间戳score存储，支持滚动分页。LBS附近推荐用GEO存储坐标，GEORADIUS实现3km内检索<50ms，结合GEOHASH按区域分片。\n\n4.秒杀系统与异步削峰：Redis+Lua脚本原子扣减库存+资格校验（一人一单)，消除超卖。订单ID采用改进雪花算法：ZooKeeper记录时间戳，回拨<5ms自旋等待，>5ms重新分配Workld；数据库唯一索引兜底防重。RabbitMQ异步落库：生产者Confirm+消费者手动Ack保证消息不丢失；消费端Redis分布式锁+唯一索引双重幂等；监控队列深度，触发消费者动态扩容。DBCPU负载降低65%，峰值万级请求平稳入库。\n\n5.Feed流推拉结合与LBS服务：大V(粉丝>10万)推模式主动写入粉丝收件箱，普通用户拉模式按需聚合，冷启动用户首屏延迟降低40%。粉丝收件箱按时间排序分页拉取。开发附近店铺推荐：Redis GEO存储商户坐标，3km内检索<50ms。\n\n6.负载均衡与性能优化：Redis Cluster通过哈希槽自动完成数据分片与故障转移。热点请求通过Caffeine本地缓存拦截，同一商户查询在应用进程内直接返回，避免单Key高QPS热点。Nginx反向代理+静态资源缓存，首屏加载优化至1.2s"
