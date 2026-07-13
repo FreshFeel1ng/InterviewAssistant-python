@@ -55,11 +55,40 @@ class ResumeParser:
         """根据文件类型解析简历"""
         ext = Path(filename).suffix.lower()
         if ext == ".pdf":
+            # 优先用 MinerU API，失败回退本地解析
+            if config.mineru_api_token:
+                text = self._parse_with_mineru(content, filename)
+                if text.strip():
+                    return text.strip()
+                print("[Resume] MinerU 返回空，回退本地解析")
             return self._parse_pdf(content)
         elif ext in (".docx", ".doc"):
             return self._parse_docx(content)
         else:
             return content.decode("utf-8", errors="ignore")
+
+    def _parse_with_mineru(self, content: bytes, filename: str) -> str:
+        """使用 MinerU API 解析 PDF"""
+        import requests
+
+        url = "https://mineru.net/api/v1/parse"
+        headers = {"Authorization": f"Bearer {config.mineru_api_token}"}
+
+        try:
+            files = {"file": (filename, content, "application/pdf")}
+            response = requests.post(url, headers=headers, files=files, timeout=60)
+            if response.status_code == 200:
+                result = response.json()
+                # MinerU 返回 markdown 格式文本
+                text = result.get("content", "") or result.get("text", "") or ""
+                print(f"[Resume] MinerU 解析成功: {len(text)} 字符")
+                return text
+            else:
+                print(f"[Resume] MinerU 请求失败: {response.status_code} {response.text[:200]}")
+                return ""
+        except Exception as e:
+            print(f"[Resume] MinerU 异常: {e}")
+            return ""
 
     def _parse_pdf(self, content: bytes) -> str:
         text = ""

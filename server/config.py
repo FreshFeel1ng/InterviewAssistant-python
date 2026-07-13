@@ -14,6 +14,7 @@ class Config:
     server_port: int = int(os.getenv("SERVER_PORT", "3001"))
     temperature: float = 0.7
     max_tokens: int = 500
+    mineru_api_token: str = os.getenv("MINERU_API_TOKEN", "")
 
 
 config = Config()
