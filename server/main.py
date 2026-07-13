@@ -60,6 +60,9 @@ class SessionManager:
     def remove_session(self, session_id: str):
         self.sessions.pop(session_id, None)
 
+    def get_all_sessions(self) -> list[dict]:
+        return list(self.sessions.values())
+
 
 session_manager = SessionManager()
 # 全局简历知识库（所有会话共享）
@@ -90,6 +93,12 @@ async def upload_resume(file: UploadFile = File(...)):
 
     try:
         resume = global_resume_kb.load_resume(content, file.filename or "resume")
+
+        # 更新所有活跃 session 的 agent 中的简历知识库
+        for s in session_manager.get_all_sessions():
+            s["agent"].resume_kb = global_resume_kb
+        print(f"[Resume] 已更新 {len(session_manager.get_all_sessions())} 个活跃会话的简历知识库")
+
         return {
             "success": True,
             "message": f"简历解析成功",

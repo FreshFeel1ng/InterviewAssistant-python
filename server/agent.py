@@ -143,8 +143,11 @@ class InterviewAgent:
 
         # 检索简历相关上下文
         resume_context = ""
-        if self.resume_kb:
+        if self.resume_kb and self.resume_kb.resume:
             resume_context = self.resume_kb.get_context_for_question(question)
+            print(f"[Agent] 检索到简历上下文: {len(resume_context)} 字符, 项目数: {len(self.resume_kb.resume.projects)}")
+        else:
+            print(f"[Agent] 简历知识库未加载: has_kb={self.resume_kb is not None}, has_resume={self.resume_kb and self.resume_kb.resume is not None}")
 
         full_response = ""
         async for chunk in chain.astream({
