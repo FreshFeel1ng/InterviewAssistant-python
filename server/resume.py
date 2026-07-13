@@ -68,34 +68,124 @@ class ResumeParser:
             return content.decode("utf-8", errors="ignore")
 
     def _parse_with_mineru(self, content: bytes, filename: str) -> str:
-        """使用 MinerU API 解析 PDF"""
+        """使用 MinerU 精准解析 API（异步：提交任务 → 轮询结果）"""
         import requests
+        import base64
+        import time
 
-        url = "https://mineru.net/api/v4/parse"
-        headers = {"Authorization": f"Bearer {config.mineru_api_token}"}
+        token = config.mineru_api_token
+        base_url = "https://mineru.net/api/v4"
 
         try:
-            files = {"file": (filename, content, "application/pdf")}
-            response = requests.post(url, headers=headers, files=files, timeout=60)
-            if response.status_code == 200:
-                result = response.json()
-                print(f"[Resume] MinerU 响应字段: {list(result.keys())[:10]}")
-                # MinerU v4 返回的字段可能是 content / markdown / text
-                text = (
-                    result.get("content", "")
-                    or result.get("markdown", "")
-                    or result.get("text", "")
-                    or result.get("data", {}).get("content", "")
-                    or result.get("data", {}).get("markdown", "")
-                    or ""
-                )
-                print(f"[Resume] MinerU 解析成功: {len(text)} 字符")
-                return text
-            else:
-                print(f"[Resume] MinerU 请求失败: {response.status_code} {response.text[:300]}")
+            # 第1步：上传文件获取 file_url（或直接用 base64）
+            # 精准解析 API 支持 url 模式，先获取上传链接
+            print("[Resume] MinerU: 获取上传链接...")
+            batch_url = f"{base_url}/file-urls/batch"
+            batch_resp = requests.post(
+                batch_url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                json={"files": [{"name": filename, "is_public": False}]},
+                timeout=30,
+            )
+
+            if batch_resp.status_code != 200:
+                print(f"[Resume] MinerU 获取上传链接失败: {batch_resp.status_code} {batch_resp.text[:200]}")
                 return ""
+
+            batch_data = batch_resp.json()
+            file_urls = batch_data.get("data", {}).get("urls", [])
+            if not file_urls:
+                print(f"[Resume] MinerU 未返回上传链接: {batch_data}")
+                return ""
+
+            upload_url = file_urls[0]
+            print(f"[Resume] MinerU: 上传文件...")
+
+            # 第2步：上传文件
+            upload_resp = requests.put(upload_url, data=content, timeout=120)
+            if upload_resp.status_code not in (200, 201):
+                print(f"[Resume] MinerU 上传失败: {upload_resp.status_code}")
+                return ""
+
+            print("[Resume] MinerU: 提交解析任务...")
+
+            # 第3步：提交解析任务
+            task_url = f"{base_url}/extract/task"
+            task_resp = requests.post(
+                task_url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                json={
+                    "url": upload_url.split("?")[0],
+                    "model_version": "vlm",
+                    "is_ocr": True,
+                },
+                timeout=30,
+            )
+
+            if task_resp.status_code != 200:
+                print(f"[Resume] MinerU 提交任务失败: {task_resp.status_code} {task_resp.text[:200]}")
+                return ""
+
+            task_data = task_resp.json()
+            task_id = task_data.get("data", {}).get("task_id", "")
+            if not task_id:
+                print(f"[Resume] MinerU 未返回 task_id: {task_data}")
+                return ""
+
+            print(f"[Resume] MinerU: 任务已提交, task_id={task_id}, 等待解析...")
+
+            # 第4步：轮询结果（最多等60秒）
+            result_url = f"{base_url}/extract/task/{task_id}"
+            for attempt in range(20):
+                time.sleep(3)
+                result_resp = requests.get(
+                    result_url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30,
+                )
+
+                if result_resp.status_code != 200:
+                    print(f"[Resume] MinerU 查询失败: {result_resp.status_code}")
+                    continue
+
+                result_data = result_resp.json()
+                state = result_data.get("data", {}).get("state", "")
+
+                if state == "done":
+                    # 解析完成，获取结果 zip 中的 markdown
+                    result_url_zip = result_data.get("data", {}).get("result_url", "")
+                    if result_url_zip:
+                        print(f"[Resume] MinerU: 下载结果...")
+                        zip_resp = requests.get(result_url_zip, timeout=30)
+                        if zip_resp.status_code == 200:
+                            import zipfile
+                            with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
+                                for name in zf.namelist():
+                                    if name.endswith(".md"):
+                                        text = zf.read(name).decode("utf-8", errors="ignore")
+                                        print(f"[Resume] MinerU 解析成功: {len(text)} 字符")
+                                        return text
+                        print("[Resume] MinerU: 结果下载失败或未找到 md 文件")
+                    return ""
+                elif state == "failed":
+                    print("[Resume] MinerU: 任务失败")
+                    return ""
+                else:
+                    print(f"[Resume] MinerU: 状态={state}, 继续等待...")
+
+            print("[Resume] MinerU: 超时")
+            return ""
+
         except Exception as e:
             print(f"[Resume] MinerU 异常: {e}")
+            import traceback
+            traceback.print_exc()
             return ""
 
     def _parse_pdf(self, content: bytes) -> str:
