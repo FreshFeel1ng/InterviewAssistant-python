@@ -15,6 +15,13 @@ class Config:
     temperature: float = 0.7
     max_tokens: int = 500
     mineru_api_token: str = os.getenv("MINERU_API_TOKEN", "")
+    # 硅基流动（嵌入模型）
+    siliconflow_api_key: str = os.getenv("SILICONFLOW_API_KEY", "")
+    siliconflow_base_url: str = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
+    # Milvus
+    milvus_host: str = os.getenv("MILVUS_HOST", "localhost")
+    milvus_port: int = int(os.getenv("MILVUS_PORT", "19530"))
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
 
 config = Config()

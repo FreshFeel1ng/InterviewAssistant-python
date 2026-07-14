@@ -133,7 +133,23 @@ async def resume_status():
             "name": global_resume_kb.resume.name,
             "project_count": len(global_resume_kb.resume.projects),
             "skills": global_resume_kb.resume.skills,
+            "search_mode": global_resume_kb.search_mode,
         }
+    return {"loaded": False, "search_mode": global_resume_kb.search_mode}
+
+
+@app.post("/api/resume/search-mode")
+async def set_search_mode(data: dict):
+    """切换检索模式: {"mode": "keyword"} 或 {"mode": "vector"}"""
+    mode = data.get("mode", "keyword")
+    try:
+        global_resume_kb.switch_mode(mode)
+        # 同步更新所有活跃 session 的 agent
+        for s in session_manager.get_all_sessions():
+            s["agent"].resume_kb = global_resume_kb
+        return {"success": True, "mode": global_resume_kb.search_mode}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"loaded": False}
 
 

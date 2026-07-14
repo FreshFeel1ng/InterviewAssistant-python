@@ -14,7 +14,6 @@ from typing import Optional
 
 import numpy as np
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
 
 from server.config import config
 
@@ -473,16 +472,17 @@ class ResumeExtractor:
 
 
 class ResumeKnowledgeBase:
-    """简历知识库 - 基于向量检索的 RAG"""
+    """简历知识库 - 支持关键词匹配 / 向量 RAG 两种检索模式"""
 
-    def __init__(self):
-        self.embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-small",
-            api_key=config.deepseek_api_key,
-            base_url=config.deepseek_base_url,
-        )
+    # 检索模式常量
+    MODE_KEYWORD = "keyword"   # 关键词匹配（默认，零延迟）
+    MODE_VECTOR = "vector"     # 向量语义检索（BGE-M3 + Milvus）
+
+    def __init__(self, search_mode: str = MODE_KEYWORD):
+        self.search_mode = search_mode
         self.resume: Optional[ResumeData] = None
         self._chunks: list[Document] = []
+        self._vector_store = None  # Milvus 向量存储（懒加载）
 
     def load_resume(self, content: bytes, filename: str) -> ResumeData:
         """加载并解析简历"""
@@ -603,24 +603,118 @@ class ResumeKnowledgeBase:
         self._chunks = chunks
 
     def search(self, query: str, top_k: int = 3) -> list[Document]:
-        """搜索相关简历内容"""
+        """搜索相关简历内容，根据 search_mode 自动选择检索方式"""
         if not self._chunks:
             return []
 
-        # 简单关键词匹配（避免依赖 embedding API 调用延迟）
+        if self.search_mode == self.MODE_VECTOR:
+            return self._search_vector(query, top_k)
+        else:
+            return self._search_keyword(query, top_k)
+
+    def _search_keyword(self, query: str, top_k: int = 3) -> list[Document]:
+        """关键词匹配检索（默认，零延迟，不需要外部服务）"""
         scored = []
         query_lower = query.lower()
         for chunk in self._chunks:
             content_lower = chunk.page_content.lower()
-            # 关键词匹配得分
             score = sum(1 for word in query_lower.split() if word in content_lower)
-            # 项目名完全匹配加分
             if chunk.metadata.get("project_name", "").lower() in query_lower:
                 score += 5
             scored.append((score, chunk))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [c for _, c in scored[:top_k] if _ > 0] or [c for _, c in scored[:top_k]]
+
+    # ==================== 向量 RAG（BGE-M3 + Milvus） ====================
+
+    def _get_embeddings(self):
+        """获取 BGE-M3 嵌入模型（通过硅基流动 API）"""
+        from langchain_openai import OpenAIEmbeddings
+        return OpenAIEmbeddings(
+            model=config.embedding_model,           # BAAI/bge-m3
+            api_key=config.siliconflow_api_key,
+            base_url=config.siliconflow_base_url,
+        )
+
+    def _init_vector_store(self):
+        """初始化 Milvus 向量存储（仅首次调用时创建）"""
+        if self._vector_store is not None:
+            return
+
+        from langchain_milvus import Milvus
+
+        embeddings = self._get_embeddings()
+        collection_name = f"resume_{self.resume.name if self.resume else 'default'}"
+
+        print(f"[RAG] 初始化 Milvus 向量存储: collection={collection_name}")
+
+        # 连接 Milvus
+        self._vector_store = Milvus(
+            embedding_function=embeddings,
+            collection_name=collection_name,
+            connection_args={
+                "host": config.milvus_host,
+                "port": config.milvus_port,
+            },
+            # 自动创建 collection
+            auto_id=True,
+            drop_old=False,  # 不删除旧数据，增量追加
+        )
+
+        # 如果已有 chunks，批量写入
+        if self._chunks:
+            texts = [c.page_content for c in self._chunks]
+            metadatas = [c.metadata for c in self._chunks]
+            print(f"[RAG] 正在向量化 {len(texts)} 个文档块...")
+            self._vector_store.add_texts(texts, metadatas=metadatas)
+            print(f"[RAG] 向量化完成，已写入 Milvus")
+
+    def _search_vector(self, query: str, top_k: int = 3) -> list[Document]:
+        """向量语义检索（BGE-M3 嵌入 + Milvus 相似度搜索）
+
+        流程：
+        1. query → BGE-M3 → 1024维向量
+        2. Milvus 中找余弦相似度最高的 top_k 个文档
+        3. 返回原始 Document 对象
+
+        与关键词匹配的区别：
+        - "高并发处理" 能匹配到 "QPS 8000 优化"（语义相近）
+        - "微服务经验" 能匹配到 "Spring Cloud 架构"（概念关联）
+        """
+        try:
+            self._init_vector_store()
+
+            if self._vector_store is None:
+                print("[RAG] Milvus 未初始化，回退到关键词匹配")
+                return self._search_keyword(query, top_k)
+
+            docs = self._vector_store.similarity_search(query, k=top_k)
+            print(f"[RAG] 向量检索: query='{query[:30]}...' → {len(docs)} 个结果")
+            return docs
+
+        except Exception as e:
+            print(f"[RAG] 向量检索失败，回退到关键词匹配: {e}")
+            return self._search_keyword(query, top_k)
+
+    def switch_mode(self, mode: str):
+        """切换检索模式
+
+        Args:
+            mode: 'keyword' 或 'vector'
+        """
+        if mode not in (self.MODE_KEYWORD, self.MODE_VECTOR):
+            raise ValueError(f"不支持的检索模式: {mode}")
+        self.search_mode = mode
+        print(f"[RAG] 检索模式切换为: {mode}")
+
+        # 切换到向量模式时预加载 Milvus
+        if mode == self.MODE_VECTOR:
+            try:
+                self._init_vector_store()
+            except Exception as e:
+                print(f"[RAG] Milvus 初始化失败，保持关键词模式: {e}")
+                self.search_mode = self.MODE_KEYWORD
 
     def get_context_for_question(self, question: str) -> str:
         """根据面试问题检索相关简历上下文"""
