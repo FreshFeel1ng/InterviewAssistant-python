@@ -36,6 +36,7 @@ export default function App() {
   const [resumeLoaded, setResumeLoaded] = useState(false);
   const [resumeInfo, setResumeInfo] = useState<{ name?: string; projectCount?: number; skills?: string[] }>({});
   const [uploading, setUploading] = useState(false);
+  const [searchMode, setSearchMode] = useState<'keyword' | 'vector'>('keyword');
   const answerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -150,6 +151,24 @@ export default function App() {
   const triggerUpload = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
+
+  // 切换检索模式
+  const toggleSearchMode = useCallback(async () => {
+    const newMode = searchMode === 'keyword' ? 'vector' : 'keyword';
+    try {
+      const res = await fetch('/api/resume/search-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: newMode }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSearchMode(data.mode);
+      }
+    } catch (err: any) {
+      alert('切换失败: ' + err.message);
+    }
+  }, [searchMode]);
 
   // 切换麦克风
   const toggleMic = useCallback(() => {
@@ -290,6 +309,36 @@ export default function App() {
                       </span>
                     )}
                   </button>
+                </div>
+              )}
+
+              {/* 检索模式切换 */}
+              {resumeLoaded && (
+                <div className="mt-4 pt-4 border-t border-[#1e1e2e]">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs text-[#9090a8]">检索模式</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                      searchMode === 'vector'
+                        ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                        : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                    }`}>
+                      {searchMode === 'vector' ? 'BGE-M3 向量' : '关键词匹配'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={toggleSearchMode}
+                    className="w-full py-2 px-3 rounded-lg text-xs border border-[#2a2a3e] text-[#9090a8] hover:text-white hover:border-[#3a3a4e] transition-all flex items-center justify-center gap-2"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                    </svg>
+                    切换到{searchMode === 'keyword' ? '向量 RAG' : '关键词匹配'}
+                  </button>
+                  <p className="text-[10px] text-[#9090a8]/50 mt-1.5 text-center leading-relaxed">
+                    {searchMode === 'keyword'
+                      ? '向量模式需 Milvus 运行在 19530 端口'
+                      : '关键词模式零延迟，无需外部服务'}
+                  </p>
                 </div>
               )}
             </div>
