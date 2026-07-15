@@ -115,6 +115,10 @@ npx vite --port 5173
 
 访问 http://localhost:5173
 
+## 界面预览
+
+![使用示范](./docs/demo.png)
+
 ## 项目结构
 
 ```
