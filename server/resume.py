@@ -42,13 +42,25 @@ class ProjectInfo:
 
 
 @dataclass
+class WorkExperience:
+    """工作/实习经历"""
+    company: str = ""
+    role: str = ""
+    duration: str = ""
+    description: str = ""
+    highlights: list[str] = field(default_factory=list)
+    tech_stack: list[str] = field(default_factory=list)
+    raw_text: str = ""
+
+
+@dataclass
 class ResumeData:
     """简历数据结构"""
     name: str = ""
     summary: str = ""
     skills: list[str] = field(default_factory=list)
     projects: list[ProjectInfo] = field(default_factory=list)
-    work_experience: list[dict] = field(default_factory=list)
+    work_experience: list[WorkExperience] = field(default_factory=list)
     education: list[dict] = field(default_factory=list)
     raw_text: str = ""
     chunks: list[Document] = field(default_factory=list)
@@ -236,16 +248,16 @@ class ResumeExtractor:
         data.name = self._extract_name(raw_text)
         data.skills = self._extract_skills(raw_text)
         data.summary = self._build_summary(data)
-        # LLM 提取项目经历
-        data.projects = self._extract_projects_with_llm(raw_text)
+        # LLM 提取项目经历 和 工作/实习经历
+        result = self._extract_all_with_llm(raw_text)
+        data.projects = result.get("projects", [])
+        data.work_experience = result.get("work_experience", [])
         return data
 
-    def _extract_projects_with_llm(self, raw_text: str) -> list[ProjectInfo]:
-        """使用 LLM 从简历中提取项目经历"""
+    def _extract_all_with_llm(self, raw_text: str) -> dict:
+        """使用 LLM 从简历中同时提取项目经历和工作/实习经历"""
         from langchain_openai import ChatOpenAI
-        from langchain_core.output_parsers import JsonOutputParser
 
-        # 截断过长的文本（DeepSeek 上下文限制足够）
         text = raw_text[:8000]
 
         llm = ChatOpenAI(
@@ -255,34 +267,48 @@ class ResumeExtractor:
             base_url=config.deepseek_base_url,
         )
 
-        prompt = f"""从以下简历中提取所有项目经历。返回 JSON 数组。
+        prompt = f"""从以下简历中提取所有项目经历和工作/实习经历。返回严格 JSON 对象。
 
 简历内容：
 {text}
 
-请提取每个项目的以下信息，返回严格的 JSON 数组格式：
-[
-  {{
-    "name": "项目名称",
-    "description": "项目简要描述（50字内）",
-    "role": "你在项目中的角色",
-    "tech_stack": ["用到的技术1", "技术2"],
-    "highlights": ["亮点1", "亮点2"],
-    "duration": "项目时间",
-    "raw_text": "简历中关于该项目的原文描述"
-  }}
-]
+返回格式：
+{{
+  "projects": [
+    {{
+      "name": "项目名称",
+      "description": "项目简要描述（50字内）",
+      "role": "你在项目中的角色",
+      "tech_stack": ["用到的技术1", "技术2"],
+      "highlights": ["亮点1", "亮点2"],
+      "duration": "项目时间",
+      "raw_text": "简历中关于该项目的原文描述"
+    }}
+  ],
+  "work_experience": [
+    {{
+      "company": "公司名称",
+      "role": "职位",
+      "duration": "工作时间段",
+      "description": "工作/实习内容总结（100字内）",
+      "highlights": ["主要贡献1", "主要贡献2"],
+      "tech_stack": ["用到的技术1", "技术2"],
+      "raw_text": "简历中关于该段经历的原文描述"
+    }}
+  ]
+}}
 
 注意：
-1. 必须返回合法 JSON 数组，不要加任何额外文字
-2. 每个字段尽量填写，没有的信息填空字符串或空数组
-3. 如果简历中没有明确的项目经历，返回空数组 []
-4. raw_text 必须保留简历中的原文"""
+1. 必须返回包含 projects 和 work_experience 两个字段的 JSON 对象
+2. 没有的内容返回空数组 []
+3. raw_text 必须保留简历中的原文
+4. 实习经历也要提取（标记为实习岗位）
+5. 不要加任何额外文字或 markdown 代码块标记"""
 
         try:
             response = llm.invoke(prompt)
             content = response.content if hasattr(response, 'content') else str(response)
-            print(f"[Resume] LLM 返回: {content[:200]}...")
+            print(f"[Resume] LLM 返回: {content[:300]}...")
             # 清理可能的 markdown 代码块
             content = content.strip()
             if content.startswith("```json"):
@@ -293,14 +319,13 @@ class ResumeExtractor:
                 content = content[:-3]
             content = content.strip()
 
-            projects_data = json.loads(content)
-
-            if not isinstance(projects_data, list):
-                print(f"[Resume] LLM 返回的不是数组: {type(projects_data)}")
-                projects_data = []
+            data = json.loads(content)
+            if not isinstance(data, dict):
+                print(f"[Resume] LLM 返回格式异常: {type(data)}")
+                return {"projects": [], "work_experience": []}
 
             projects = []
-            for p in projects_data:
+            for p in data.get("projects", []):
                 proj = ProjectInfo(
                     name=p.get("name", ""),
                     description=p.get("description", ""),
@@ -313,13 +338,30 @@ class ResumeExtractor:
                 if proj.name or proj.raw_text:
                     projects.append(proj)
 
-            print(f"[Resume] LLM 提取到 {len(projects)} 个项目")
-            return projects
+            works = []
+            for w in data.get("work_experience", []):
+                work = WorkExperience(
+                    company=w.get("company", ""),
+                    role=w.get("role", ""),
+                    duration=w.get("duration", ""),
+                    description=w.get("description", ""),
+                    highlights=w.get("highlights", []),
+                    tech_stack=w.get("tech_stack", []),
+                    raw_text=w.get("raw_text", ""),
+                )
+                if work.company or work.raw_text:
+                    works.append(work)
+
+            print(f"[Resume] LLM 提取到 {len(projects)} 个项目, {len(works)} 段工作/实习经历")
+            return {"projects": projects, "work_experience": works}
+
         except Exception as e:
             print(f"[Resume] LLM 提取失败，回退到正则: {e}")
             import traceback
             traceback.print_exc()
-            return self._extract_projects_fallback(raw_text)
+            # 回退：只提取项目
+            projects = self._extract_projects_fallback(raw_text)
+            return {"projects": projects, "work_experience": []}
 
     def _extract_projects_fallback(self, raw_text: str) -> list[ProjectInfo]:
         """正则回退提取"""
@@ -475,6 +517,8 @@ class ResumeExtractor:
             parts.append(f"技能: {', '.join(data.skills[:10])}")
         if data.projects:
             parts.append(f"项目数: {len(data.projects)}个")
+        if data.work_experience:
+            parts.append(f"工作经历: {len(data.work_experience)}段")
         return " | ".join(parts)
 
 
@@ -548,6 +592,17 @@ class ResumeKnowledgeBase:
                 raw_text=p.get("raw_text", ""),
             ))
 
+        for w in data_dict.get("work_experience", []):
+            resume.work_experience.append(WorkExperience(
+                company=w.get("company", ""),
+                role=w.get("role", ""),
+                duration=w.get("duration", ""),
+                description=w.get("description", ""),
+                highlights=w.get("highlights", []),
+                tech_stack=w.get("tech_stack", []),
+                raw_text=w.get("raw_text", ""),
+            ))
+
         self.resume = resume
         self._build_chunks(resume)
         return resume
@@ -611,11 +666,25 @@ class ResumeKnowledgeBase:
                 metadata={"type": "project", "project_index": i, "project_name": proj.name}
             ))
 
-        # 工作经历块
-        for exp in resume.work_experience:
+        # 工作/实习经历块
+        for i, exp in enumerate(resume.work_experience):
+            content_parts = [f"公司: {exp.company}"]
+            if exp.role:
+                content_parts.append(f"职位: {exp.role}")
+            if exp.duration:
+                content_parts.append(f"时间: {exp.duration}")
+            if exp.tech_stack:
+                content_parts.append(f"技术栈: {', '.join(exp.tech_stack)}")
+            if exp.highlights:
+                content_parts.append(f"主要贡献: {'; '.join(exp.highlights)}")
+            if exp.description:
+                content_parts.append(f"工作内容: {exp.description}")
+            if exp.raw_text:
+                content_parts.append(f"原文: {exp.raw_text[:500]}")
+
             chunks.append(Document(
-                page_content=f"工作经历: {json.dumps(exp, ensure_ascii=False)}",
-                metadata={"type": "work_experience"}
+                page_content="\n".join(content_parts),
+                metadata={"type": "work_experience", "exp_index": i, "company": exp.company}
             ))
 
         self._chunks = chunks
@@ -738,18 +807,30 @@ class ResumeKnowledgeBase:
         """根据面试问题检索相关简历上下文"""
         docs = self.search(question, top_k=3)
 
-        # 如果检索结果为空或是问"项目"相关的问题，返回所有项目
         is_project_question = any(kw in question for kw in ["项目", "做过", "经历", "project", "介绍", "负责"])
-        if not docs or is_project_question:
-            # 返回所有项目 + 技能摘要
+        is_work_question = any(kw in question for kw in ["实习", "工作", "公司", "经历", "负责", "团队", "贡献", "离职"])
+
+        if not docs or is_project_question or is_work_question:
             parts = []
             if self.resume:
                 if self.resume.summary:
                     parts.append(f"候选人背景: {self.resume.summary}")
                 if self.resume.skills:
                     parts.append(f"技能: {', '.join(self.resume.skills)}")
+
+                # 项目经历
                 for proj in self.resume.projects:
                     parts.append(f"项目: {proj.name}\n角色: {proj.role}\n技术栈: {', '.join(proj.tech_stack)}\n亮点: {'; '.join(proj.highlights)}\n描述: {proj.raw_text[:300]}")
+
+                # 工作/实习经历
+                for exp in self.resume.work_experience:
+                    parts.append(
+                        f"工作/实习: {exp.company} | {exp.role} | {exp.duration}\n"
+                        f"工作内容: {exp.description}\n"
+                        f"技术栈: {', '.join(exp.tech_stack)}\n"
+                        f"主要贡献: {'; '.join(exp.highlights)}\n"
+                        f"原文: {exp.raw_text[:300]}"
+                    )
             return "\n\n---\n\n".join(parts) if parts else ""
 
         parts = []
@@ -777,7 +858,18 @@ class ResumeKnowledgeBase:
                 }
                 for p in resume.projects
             ],
-            "work_experience": resume.work_experience,
+            "work_experience": [
+                {
+                    "company": w.company,
+                    "role": w.role,
+                    "duration": w.duration,
+                    "description": w.description,
+                    "highlights": w.highlights,
+                    "tech_stack": w.tech_stack,
+                    "raw_text": w.raw_text,
+                }
+                for w in resume.work_experience
+            ],
             "education": resume.education,
         }
         with open(json_path, "w", encoding="utf-8") as f:
