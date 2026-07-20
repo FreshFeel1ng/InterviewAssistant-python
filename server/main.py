@@ -13,12 +13,7 @@ from server.config import config, validate_config
 from server.agent import InterviewAgent
 from server.speech import preprocess_transcript, is_complete_question, extract_question
 from server.audio_capture import SystemAudioCapture, WhisperTranscriber
-from server.resume import ResumeKnowledgeBase, ResumeData, ProjectInfo
-from server.auth import (
-    register, login, verify_token,
-    save_resume_to_redis, load_resume_from_redis, extend_resume_ttl,
-    User,
-)
+from server.resume import ResumeKnowledgeBase
 
 validate_config()
 
@@ -48,55 +43,23 @@ class SessionManager:
     def __init__(self):
         self.sessions: dict[str, dict] = {}
 
-    def create_session(self, cfg: Optional[SessionConfig] = None, user: Optional[User] = None) -> dict:
+    def create_session(self, cfg: Optional[SessionConfig] = None) -> dict:
         session_id = str(uuid.uuid4())
         agent = InterviewAgent()
-        user_id = user.id if user else session_id  # 未登录用 session_id 兜底
-        resume_kb = ResumeKnowledgeBase(session_id=str(user_id))
-
-        # 优先从 Redis 加载简历缓存
-        resume_loaded = False
-        if user:
-            cached = load_resume_from_redis(user.id)
-            if cached:
-                resume_loaded = True
-                # 从缓存恢复简历数据
-                resume_kb.resume = ResumeData(
-                    name=cached.get("name", ""),
-                    summary=cached.get("summary", ""),
-                    skills=cached.get("skills", []),
-                    raw_text=cached.get("raw_text", ""),
-                )
-                for p in cached.get("projects", []):
-                    resume_kb.resume.projects.append(ProjectInfo(
-                        name=p.get("name", ""),
-                        description=p.get("description", ""),
-                        role=p.get("role", ""),
-                        tech_stack=p.get("tech_stack", []),
-                        highlights=p.get("highlights", []),
-                        duration=p.get("duration", ""),
-                        raw_text=p.get("raw_text", ""),
-                    ))
-                resume_kb._build_chunks(resume_kb.resume)
-                agent.resume_kb = resume_kb
-                print(f"[Session] 从 Redis 恢复简历: user_id={user.id}, 项目={len(resume_kb.resume.projects)}")
-
-        if not resume_loaded:
-            # Redis 没有，尝试本地文件
-            loaded = resume_kb.load_latest()
-            if loaded:
-                agent.resume_kb = resume_kb
-
+        # 每个 session 拥有独立的简历知识库，防止多用户简历串扰
+        resume_kb = ResumeKnowledgeBase(session_id=session_id)
+        # 尝试加载该 session 之前保存的简历
+        loaded = resume_kb.load_latest()
+        if loaded:
+            agent.resume_kb = resume_kb
         session = {
             "id": session_id,
             "agent": agent,
             "config": cfg or SessionConfig(),
             "resume_kb": resume_kb,
-            "user": user,
-            "user_id": user_id,
         }
         self.sessions[session_id] = session
-        print(f"[Session] 创建会话: {session_id}, user_id={user_id}, 简历: {'已加载' if agent.resume_kb and agent.resume_kb.resume else '未上传'}")
+        print(f"[Session] 创建会话: {session_id}, 简历: {'已加载' if loaded else '未上传'}")
         return session
 
     def get_session(self, session_id: str) -> Optional[dict]:
@@ -113,34 +76,6 @@ session_manager = SessionManager()
 
 
 # ============ REST API ============
-
-# ---- 认证 ----
-
-@app.post("/api/auth/register")
-async def api_register(data: dict):
-    """注册: {"username": "xxx", "password": "xxx"}"""
-    result = register(data.get("username", ""), data.get("password", ""))
-    if result.success:
-        return {
-            "success": True,
-            "token": result.token,
-            "user": {"id": result.user.id, "username": result.user.username},
-        }
-    raise HTTPException(status_code=400, detail=result.error)
-
-
-@app.post("/api/auth/login")
-async def api_login(data: dict):
-    """登录: {"username": "xxx", "password": "xxx"}"""
-    result = login(data.get("username", ""), data.get("password", ""))
-    if result.success:
-        return {
-            "success": True,
-            "token": result.token,
-            "user": {"id": result.user.id, "username": result.user.username},
-        }
-    raise HTTPException(status_code=401, detail=result.error)
-
 
 @app.get("/api/health")
 async def health():
@@ -176,10 +111,6 @@ async def upload_resume(
         # 注入到对应 session 的 agent
         if session:
             session["agent"].resume_kb = resume_kb
-            # 如果已登录，缓存简历到 Redis（TTL 3 天）
-            user = session.get("user")
-            if user:
-                _cache_resume_to_redis(user.id, resume)
             print(f"[Resume] session={sessionId} 简历已加载, 项目={len(resume.projects)}个")
 
         return {
@@ -237,44 +168,13 @@ async def set_search_mode(data: dict):
     return {"loaded": False}
 
 
-# ---- 简历 Redis 缓存 ----
-
-def _cache_resume_to_redis(user_id: int, resume: ResumeData):
-    """将 ResumeData 序列化后存入 Redis"""
-    data = {
-        "name": resume.name,
-        "summary": resume.summary,
-        "skills": resume.skills,
-        "raw_text": resume.raw_text,
-        "projects": [
-            {
-                "name": p.name, "description": p.description,
-                "role": p.role, "tech_stack": p.tech_stack,
-                "highlights": p.highlights, "duration": p.duration,
-                "raw_text": p.raw_text,
-            }
-            for p in resume.projects
-        ],
-    }
-    save_resume_to_redis(user_id, data)
-
-
 # ============ WebSocket ============
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket, token: str = ""):
+async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
 
-    # 验证 token（可选，未登录也可使用但简历不持久化）
-    user = None
-    if token:
-        user = verify_token(token)
-        if not user:
-            await ws.send_json({"type": "error", "payload": {"message": "Token 无效或已过期，请重新登录"}})
-            await ws.close()
-            return
-
-    session = session_manager.create_session(user=user)
+    session = session_manager.create_session()
 
     # 发送会话信息（包含简历状态）
     resume_kb = session["resume_kb"]
