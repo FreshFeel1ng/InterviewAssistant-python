@@ -38,20 +38,43 @@ class SessionConfig(BaseModel):
 
 
 class SessionManager:
-    """管理 Agent 会话"""
+    """管理 Agent 会话，限制只允许一个活跃连接"""
 
     def __init__(self):
         self.sessions: dict[str, dict] = {}
+        self.active_ws: dict = {}  # WebSocket -> session_id
 
     def create_session(self, cfg: Optional[SessionConfig] = None) -> dict:
-        session_id = str(uuid.uuid4())
+        """创建新会话。先踢掉旧的活跃连接，确保只有一个 Agent。
+
+        固定使用 "default" 作为 session_id，这样无论刷新多少次，
+        简历数据始终从同一个 data/resumes/default/ 目录加载。
+        """
+        # 关闭所有旧连接
+        old_ws_list = list(self.active_ws.keys())
+        for old_ws in old_ws_list:
+            try:
+                old_ws.close()
+            except Exception:
+                pass
+
+        # 清理所有旧 session
+        old_ids = list(self.sessions.keys())
+        for sid in old_ids:
+            s = self.sessions.pop(sid, None)
+            if s and s.get("audio_capture"):
+                try:
+                    s["audio_capture"].stop()
+                except Exception:
+                    pass
+
+        session_id = "default"
         agent = InterviewAgent()
-        # 每个 session 拥有独立的简历知识库，防止多用户简历串扰
         resume_kb = ResumeKnowledgeBase(session_id=session_id)
-        # 尝试加载该 session 之前保存的简历
         loaded = resume_kb.load_latest()
         if loaded:
             agent.resume_kb = resume_kb
+
         session = {
             "id": session_id,
             "agent": agent,
@@ -59,7 +82,7 @@ class SessionManager:
             "resume_kb": resume_kb,
         }
         self.sessions[session_id] = session
-        print(f"[Session] 创建会话: {session_id}, 简历: {'已加载' if loaded else '未上传'}")
+        print(f"[Session] 创建会话, 简历: {'已加载' if loaded else '未上传'} (旧连接已踢出)")
         return session
 
     def get_session(self, session_id: str) -> Optional[dict]:
@@ -175,6 +198,7 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
 
     session = session_manager.create_session()
+    session_manager.active_ws[ws] = session["id"]
 
     # 发送会话信息（包含简历状态）
     resume_kb = session["resume_kb"]
@@ -294,6 +318,7 @@ async def websocket_endpoint(ws: WebSocket):
     finally:
         if session.get("audio_capture"):
             session["audio_capture"].stop()
+        session_manager.active_ws.pop(ws, None)
         session_manager.remove_session(session["id"])
 
 
