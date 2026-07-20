@@ -17,9 +17,16 @@ from langchain_core.documents import Document
 
 from server.config import config
 
-# 简历数据目录
-RESUME_DATA_DIR = Path(__file__).parent.parent / "data" / "resumes"
-RESUME_DATA_DIR.mkdir(parents=True, exist_ok=True)
+# 简历数据根目录
+RESUME_ROOT = Path(__file__).parent.parent / "data" / "resumes"
+RESUME_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _get_session_dir(session_id: str) -> Path:
+    """获取某个 session 的简历存储目录"""
+    session_dir = RESUME_ROOT / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    return session_dir
 
 
 @dataclass
@@ -478,8 +485,10 @@ class ResumeKnowledgeBase:
     MODE_KEYWORD = "keyword"   # 关键词匹配（默认，零延迟）
     MODE_VECTOR = "vector"     # 向量语义检索（BGE-M3 + Milvus）
 
-    def __init__(self, search_mode: str = MODE_KEYWORD):
+    def __init__(self, search_mode: str = MODE_KEYWORD, session_id: str = "default"):
         self.search_mode = search_mode
+        self.session_id = session_id
+        self.data_dir = _get_session_dir(session_id)
         self.resume: Optional[ResumeData] = None
         self._chunks: list[Document] = []
         self._vector_store = None  # Milvus 向量存储（懒加载）
@@ -513,8 +522,8 @@ class ResumeKnowledgeBase:
         return resume
 
     def load_from_local(self, filename: str) -> Optional[ResumeData]:
-        """从本地加载已保存的简历"""
-        json_path = RESUME_DATA_DIR / f"{Path(filename).stem}.json"
+        """从本地加载已保存的简历（按 session 隔离）"""
+        json_path = self.data_dir / f"{Path(filename).stem}.json"
         if not json_path.exists():
             return None
 
@@ -544,18 +553,27 @@ class ResumeKnowledgeBase:
         return resume
 
     def load_latest(self) -> Optional[ResumeData]:
-        """自动加载 data/resumes/ 目录下最近修改的简历 JSON"""
+        """自动加载当前 session 最近修改的简历 JSON（按 session 隔离）"""
         json_files = sorted(
-            RESUME_DATA_DIR.glob("*.json"),
+            self.data_dir.glob("*.json"),
             key=lambda f: f.stat().st_mtime,
             reverse=True,
         )
         if not json_files:
-            print("[Resume] 未找到已保存的简历")
-            return None
-
-        latest = json_files[0]
-        print(f"[Resume] 加载已保存的简历: {latest.name}")
+            # 兼容旧数据：如果 session 目录为空，尝试从根目录加载
+            legacy_files = sorted(
+                RESUME_ROOT.glob("*.json"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+            if not legacy_files:
+                print(f"[Resume] session={self.session_id} 未找到已保存的简历")
+                return None
+            latest = legacy_files[0]
+            print(f"[Resume] 加载旧格式简历: {latest.name}")
+        else:
+            latest = json_files[0]
+            print(f"[Resume] 加载已保存的简历: {latest.name}")
         return self.load_from_local(latest.name)
 
     def _build_chunks(self, resume: ResumeData):
@@ -645,7 +663,7 @@ class ResumeKnowledgeBase:
         from langchain_milvus import Milvus
 
         embeddings = self._get_embeddings()
-        collection_name = f"resume_{self.resume.name if self.resume else 'default'}"
+        collection_name = f"resume_{self.session_id}_{self.resume.name if self.resume else 'default'}"
 
         print(f"[RAG] 初始化 Milvus 向量存储: collection={collection_name}")
 
@@ -740,8 +758,8 @@ class ResumeKnowledgeBase:
         return "\n\n---\n\n".join(parts)
 
     def _save_local(self, resume: ResumeData, filename: str):
-        """保存简历数据到本地"""
-        json_path = RESUME_DATA_DIR / f"{Path(filename).stem}.json"
+        """保存简历数据到本地（按 session 隔离）"""
+        json_path = self.data_dir / f"{Path(filename).stem}.json"
         data = {
             "name": resume.name,
             "summary": resume.summary,

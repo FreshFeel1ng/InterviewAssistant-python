@@ -37,6 +37,7 @@ export default function App() {
   const [resumeInfo, setResumeInfo] = useState<{ name?: string; projectCount?: number; skills?: string[] }>({});
   const [uploading, setUploading] = useState(false);
   const [searchMode, setSearchMode] = useState<'keyword' | 'vector'>('keyword');
+  const [sessionId, setSessionId] = useState('');
   const answerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -67,7 +68,14 @@ export default function App() {
           break;
         }
         case 'config': {
-          const payload = msg.payload as { config: AgentConfig; resume?: { resumeLoaded: boolean; name: string; projectCount: number } };
+          const payload = msg.payload as {
+            sessionId: string;
+            config: AgentConfig;
+            resume?: { resumeLoaded: boolean; name: string; projectCount: number };
+          };
+          if (payload.sessionId) {
+            setSessionId(payload.sessionId);
+          }
           if (payload.config) {
             setConfig(payload.config);
           }
@@ -126,6 +134,7 @@ export default function App() {
     try {
       const formData = new FormData();
       formData.append('file', file);
+      formData.append('sessionId', sessionId);
       const res = await fetch('/api/resume/upload', { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
@@ -159,7 +168,7 @@ export default function App() {
       const res = await fetch('/api/resume/search-mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: newMode }),
+        body: JSON.stringify({ mode: newMode, sessionId }),
       });
       const data = await res.json();
       if (data.success) {

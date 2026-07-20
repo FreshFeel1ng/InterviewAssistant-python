@@ -5,7 +5,7 @@ import asyncio
 import uuid
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -46,12 +46,20 @@ class SessionManager:
     def create_session(self, cfg: Optional[SessionConfig] = None) -> dict:
         session_id = str(uuid.uuid4())
         agent = InterviewAgent()
+        # 每个 session 拥有独立的简历知识库，防止多用户简历串扰
+        resume_kb = ResumeKnowledgeBase(session_id=session_id)
+        # 尝试加载该 session 之前保存的简历
+        loaded = resume_kb.load_latest()
+        if loaded:
+            agent.resume_kb = resume_kb
         session = {
             "id": session_id,
             "agent": agent,
             "config": cfg or SessionConfig(),
+            "resume_kb": resume_kb,
         }
         self.sessions[session_id] = session
+        print(f"[Session] 创建会话: {session_id}, 简历: {'已加载' if loaded else '未上传'}")
         return session
 
     def get_session(self, session_id: str) -> Optional[dict]:
@@ -65,15 +73,6 @@ class SessionManager:
 
 
 session_manager = SessionManager()
-# 全局简历知识库（所有会话共享）
-global_resume_kb = ResumeKnowledgeBase()
-
-# 服务启动时自动加载最近保存的简历
-loaded = global_resume_kb.load_latest()
-if loaded:
-    print(f"[Startup] 自动加载简历: {loaded.name}, 项目={len(loaded.projects)}个, 技能={len(loaded.skills)}个")
-else:
-    print("[Startup] 未找到已保存的简历，等待上传")
 
 
 # ============ REST API ============
@@ -90,25 +89,33 @@ async def create_session(cfg: Optional[SessionConfig] = None):
 
 
 @app.post("/api/resume/upload")
-async def upload_resume(file: UploadFile = File(...)):
-    """上传简历文件（PDF/DOCX/TXT）"""
-    global global_resume_kb
-
+async def upload_resume(
+    file: UploadFile = File(...),
+    sessionId: str = Form(""),
+):
+    """上传简历文件（PDF/DOCX/TXT），按 session 隔离"""
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="文件为空")
 
-    try:
-        resume = global_resume_kb.load_resume(content, file.filename or "resume")
+    # 找到对应的 session，没有则创建临时 KB（上传后再关联）
+    session = session_manager.get_session(sessionId) if sessionId else None
+    if session:
+        resume_kb = session["resume_kb"]
+    else:
+        resume_kb = ResumeKnowledgeBase()
 
-        # 更新所有活跃 session 的 agent 中的简历知识库
-        for s in session_manager.get_all_sessions():
-            s["agent"].resume_kb = global_resume_kb
-        print(f"[Resume] 已更新 {len(session_manager.get_all_sessions())} 个活跃会话的简历知识库")
+    try:
+        resume = resume_kb.load_resume(content, file.filename or "resume")
+
+        # 注入到对应 session 的 agent
+        if session:
+            session["agent"].resume_kb = resume_kb
+            print(f"[Resume] session={sessionId} 简历已加载, 项目={len(resume.projects)}个")
 
         return {
             "success": True,
-            "message": f"简历解析成功",
+            "message": "简历解析成功",
             "data": {
                 "name": resume.name,
                 "summary": resume.summary,
@@ -125,29 +132,37 @@ async def upload_resume(file: UploadFile = File(...)):
 
 
 @app.get("/api/resume/status")
-async def resume_status():
-    """获取简历加载状态"""
-    if global_resume_kb.resume:
+async def resume_status(sessionId: str = ""):
+    """获取简历加载状态（按 session 查询）"""
+    session = session_manager.get_session(sessionId) if sessionId else None
+    resume_kb = session["resume_kb"] if session else None
+
+    if resume_kb and resume_kb.resume:
         return {
             "loaded": True,
-            "name": global_resume_kb.resume.name,
-            "project_count": len(global_resume_kb.resume.projects),
-            "skills": global_resume_kb.resume.skills,
-            "search_mode": global_resume_kb.search_mode,
+            "name": resume_kb.resume.name,
+            "project_count": len(resume_kb.resume.projects),
+            "skills": resume_kb.resume.skills,
+            "search_mode": resume_kb.search_mode,
         }
-    return {"loaded": False, "search_mode": global_resume_kb.search_mode}
+    return {"loaded": False, "search_mode": "keyword"}
 
 
 @app.post("/api/resume/search-mode")
 async def set_search_mode(data: dict):
-    """切换检索模式: {"mode": "keyword"} 或 {"mode": "vector"}"""
+    """切换检索模式: {"mode": "keyword"} 或 {"mode": "vector", "sessionId": "xxx"}"""
     mode = data.get("mode", "keyword")
+    session_id = data.get("sessionId", "")
+    session = session_manager.get_session(session_id) if session_id else None
+    resume_kb = session["resume_kb"] if session else None
+
+    if not resume_kb:
+        raise HTTPException(status_code=404, detail="未找到对应 session 的简历知识库")
+
     try:
-        global_resume_kb.switch_mode(mode)
-        # 同步更新所有活跃 session 的 agent
-        for s in session_manager.get_all_sessions():
-            s["agent"].resume_kb = global_resume_kb
-        return {"success": True, "mode": global_resume_kb.search_mode}
+        resume_kb.switch_mode(mode)
+        session["agent"].resume_kb = resume_kb
+        return {"success": True, "mode": resume_kb.search_mode}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"loaded": False}
@@ -161,17 +176,14 @@ async def websocket_endpoint(ws: WebSocket):
 
     session = session_manager.create_session()
 
-    # 注入简历知识库到 Agent
-    if global_resume_kb.resume:
-        session["agent"].resume_kb = global_resume_kb
-
     # 发送会话信息（包含简历状态）
+    resume_kb = session["resume_kb"]
     resume_info = {}
-    if global_resume_kb.resume:
+    if resume_kb.resume:
         resume_info = {
             "resumeLoaded": True,
-            "name": global_resume_kb.resume.name,
-            "projectCount": len(global_resume_kb.resume.projects),
+            "name": resume_kb.resume.name,
+            "projectCount": len(resume_kb.resume.projects),
         }
     await ws.send_json({
         "type": "config",
