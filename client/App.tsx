@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { StatusIndicator } from './components/StatusIndicator.js';
 import { TranscriptPanel } from './components/TranscriptPanel.js';
 import { AnswerPanel } from './components/AnswerPanel.js';
 import { ConfigPanel } from './components/ConfigPanel.js';
+import { LoginPage } from './components/LoginPage.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition.js';
 
@@ -41,8 +42,32 @@ export default function App() {
   const answerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // WebSocket 连接
-  const { sendMessage, isConnected } = useWebSocket('ws://localhost:3001/ws', {
+  // 认证状态
+  const [token, setToken] = useState(() => localStorage.getItem('token') || '');
+  const [username, setUsername] = useState(() => localStorage.getItem('username') || '');
+  const [isLoggedIn, setIsLoggedIn] = useState(() => !!localStorage.getItem('token'));
+
+  const handleLogin = useCallback((newToken: string, newUsername: string) => {
+    setToken(newToken);
+    setUsername(newUsername);
+    setIsLoggedIn(true);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    setToken('');
+    setUsername('');
+    setIsLoggedIn(false);
+    window.location.reload();
+  }, []);
+
+  // WebSocket 连接（带 token 认证）
+  const wsUrl = useMemo(() => {
+    return token ? `ws://localhost:3001/ws?token=${encodeURIComponent(token)}` : 'ws://localhost:3001/ws';
+  }, [token]);
+
+  const { sendMessage, isConnected } = useWebSocket(wsUrl, {
     onMessage: (msg) => {
       switch (msg.type) {
         case 'answer_chunk': {
@@ -221,6 +246,10 @@ export default function App() {
     }
   }, [isCapturingSystem, isListening, stopListening, sendMessage, audioSource]);
 
+  if (!isLoggedIn) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-[#e4e4ef]">
       {/* Header */}
@@ -236,7 +265,17 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            {username && (
+              <span className="text-xs text-[#9090a8]">{username}</span>
+            )}
             <StatusIndicator status={status} isConnected={isConnected} />
+            <button
+              onClick={handleLogout}
+              className="text-xs text-[#9090a8] hover:text-red-400 transition-colors"
+              title="退出登录"
+            >
+              退出
+            </button>
           </div>
         </div>
       </header>
